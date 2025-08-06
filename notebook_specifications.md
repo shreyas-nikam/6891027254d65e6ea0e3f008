@@ -1,333 +1,318 @@
 
-# Technical Specification for Jupyter Notebook: Interest Rate Risk Navigator
-
-This specification outlines the design and functional requirements for a Jupyter Notebook focused on simulating Interest Rate Risk in the Banking Book (IRRBB). The notebook will guide users through the process of constructing an IRRBB position, applying interest rate shocks, and analyzing the impact on Economic Value of Equity (EVE) and Net Interest Income (NII).
+# Technical Specification for Jupyter Notebook: IRRBB Gap & PV01 Analyzer
 
 ## 1. Notebook Overview
 
-This Jupyter Notebook provides an interactive framework for understanding and calculating Interest Rate Risk in the Banking Book (IRRBB), focusing on Economic Value of Equity (EVE) and Net Interest Income (NII) metrics as per Basel and CBUAE standards.
-
 ### 1.1 Learning Goals
 
-Upon completion of this notebook, users will be able to:
+This Jupyter Notebook aims to provide a comprehensive understanding of Interest Rate Risk in the Banking Book (IRRBB) by guiding users through a practical implementation. Upon completion, users will be able to:
 
-*   Construct an IRRBB position dataset that accurately captures interest-sensitive assets, liabilities, and optional derivatives (like swaps), including all necessary attributes for comprehensive cash-flow generation.
-*   Generate behavioral cash flows and organize them into a gap table, assigning principal and interest streams to standard Basel time-buckets, and computing bucket-level PV01 (Price Value of 01) or modified duration.
-*   Implement a robust cash-flow revaluation IRRBB engine capable of re-pricing the portfolio under the six prescribed Basel interest rate shock curves (Parallel Up, Parallel Down, Steepener, Flattener, Short-end Up, Short-end Down).
-*   Output key risk metrics, specifically $\Delta\text{EVE}$ (as a percentage of Tier-1 capital) and 1-year $\Delta\text{NII}$.
-*   Interpret the practical meaning of the generated risk metrics (e.g., "$$\Delta\text{EVE} = -5\% \text{ means equity value falls by } 5\% \text{ of Tier-1 if rates rise } 200\text{bp}$$") and identify the underlying drivers of the results.
+*   **Assemble and Understand Dataset**: Create or load an IRRBB position dataset and identify its cash-flow-relevant attributes for various instruments (loans, deposits, bonds, and optionally interest-rate swaps).
+*   **Generate and Allocate Cash Flows**: Simulate contractual and behavioural cash flows for diverse instruments, allocating them into Basel-style repricing buckets.
+*   **Build and Interpret Gap Tables**: Construct and analyze a gap table, visualizing net cash inflows versus outflows, and calculating net PV01 (Price Value of 1 Basis Point) or modified duration contributions per bucket.
+*   **Calibrate Behavioural Models**: Develop and calibrate two key behavioural sub-models:
+    *   A mortgage pre-payment model (e.g., baseline 5% p.a., scenario-sensitive).
+    *   A Non-Maturity Deposit (NMD) repricing-beta model (e.g., baseline $\beta = 0.5$).
+*   **Implement IRRBB Valuation Engines**: Build full-revaluation IRRBB engines to compute:
+    *   Baseline Economic Value of Equity (EVE) and Net Interest Income (NII).
+    *   Changes in EVE ($\Delta EVE$) and NII ($\Delta NII$) under the six prescribed Basel shock scenarios (Parallel $\pm$200 bp, Steepener, Flattener, Short Up, Short Down).
+*   **Interpret Model Outputs**: Analyze and interpret key risk metrics, such as $\Delta EVE$ as a percentage of Tier 1 capital, and $\Delta NII$ over 1-year and 3-year horizons, and understand their risk-management implications.
 
 ### 1.2 Expected Outcomes
 
-The notebook is expected to produce the following:
+The notebook will facilitate the generation of:
 
-*   **Synthetic Data Generation**: Automatic generation and loading of a synthetic `taiwan_bankbook_positions.csv` dataset, representative of a bank's interest-sensitive balance sheet.
-*   **Cash Flow Processing**: A processed dataset containing expanded monthly cash flows for each instrument, incorporating behavioral overlays for mortgages and Non-Maturity Deposits (NMDs).
-*   **IRRBB Engine Execution**: Successful execution of an `IRRBBEngine` class that calculates baseline Present Values (PVs) and subsequently revalues the portfolio under each of the six Basel shock scenarios.
-*   **Risk Metric Calculation**: Computation of $\Delta\text{EVE}$ (as % Tier-1) and 1-year $\Delta\text{NII}$ for all scenarios.
-*   **Visualizations**:
-    *   A clear bar chart illustrating the net gap (inflows minus outflows) across different time-buckets under the baseline scenario.
-    *   A well-formatted table presenting the calculated $\Delta\text{EVE}$ and $\Delta\text{NII}$ for each shock scenario, facilitating easy interpretation.
-*   **Saved Artefacts**: Intermediate and final results will be saved to specified file paths for reproducibility and subsequent use in potential future analysis (e.g., a "Part 2" notebook).
+*   A synthetic `irrbb_taiwan_positions.csv` dataset, representing a banking book portfolio.
+*   A detailed `irrbb_taiwan_cashflows_long.parquet` file containing simulated contractual and behavioural cash flows.
+*   An `irrbb_taiwan_gap_table.csv` summarizing bucketed cash inflows, outflows, net gap, and PV01.
+*   Calibrated behavioural models (`irrbb_taiwan_mortgage_prepay_model.pkl` and `irrbb_taiwan_nmd_beta_model.pkl`).
+*   IRRBB valuation results (`irrbb_taiwan_eve_baseline.pkl`, `irrbb_taiwan_eve_scenarios.pkl`, `irrbb_taiwan_nii_results.pkl`).
+
+In addition to data artifacts, the notebook will display key visualizations:
+
+*   Balance-sheet composition bar chart.
+*   Heatmap of the gap table.
+*   Term-structure plot of partial PV01.
+*   Scenario comparison table for $\Delta EVE$ and $\Delta NII$.
+*   (Optional) Waterfall chart illustrating baseline to shocked EVE.
+
+---
 
 ## 2. Mathematical and Theoretical Foundations
 
-This section details the core mathematical concepts and theoretical underpinnings of the IRRBB engine.
+This section will detail the core mathematical concepts and theoretical underpinnings of IRRBB analysis, with all formulas presented using LaTeX.
 
-### 2.1 Interest Rate Risk in the Banking Book (IRRBB)
+### 2.1 Overview of Interest Rate Risk in the Banking Book (IRRBB)
 
-Interest Rate Risk in the Banking Book (IRRBB) refers to the current or prospective risk to a bank's capital and earnings arising from adverse movements in interest rates that affect the bank's banking book positions. It is a key prudential risk for banks and is governed by regulations such as those from Basel and CBUAE. This notebook focuses on two primary measures of IRRBB: Economic Value of Equity (EVE) and Net Interest Income (NII).
+IRRBB refers to the current or prospective risk to a bank’s capital and earnings arising from adverse movements in interest rates that affect the bank’s banking book positions. It primarily arises from:
 
-### 2.2 Economic Value of Equity (EVE)
+*   **Gap Risk**: Mismatches in the repricing dates of assets and liabilities.
+*   **Basis Risk**: Imperfect correlation in the adjustment of rates for different instruments (e.g., assets repricing on LIBOR vs. liabilities on EIBOR).
+*   **Option Risk**: Embedded options in banking book products (e.g., prepayment options on mortgages, early withdrawal options on deposits) that allow customers to alter cash flows based on interest rate movements.
 
-EVE represents the present value of a bank's assets minus the present value of its liabilities. It is a measure of the long-term impact of interest rate changes on a bank's net worth.
+### 2.2 Present Value (PV) and Discounting
 
-#### Definition
-The Economic Value of Equity (EVE) is defined as:
-$$
-\text{EVE} = \sum_{t=1}^{N} \text{PV}(\text{Assets}_t) - \sum_{t=1}^{N} \text{PV}(\text{Liabilities}_t)
-$$
-Where $\text{PV}(CF_t)$ is the Present Value of cash flow $CF_t$ at time $t$. The Present Value (PV) of a cash flow stream is calculated using appropriate discount rates:
-$$
-\text{PV} = \sum_{t=1}^{T} \frac{CF_t}{(1 + r_t)^t} = \sum_{t=1}^{T} CF_t \times DF_t
-$$
-where $CF_t$ is the cash flow at time $t$, $r_t$ is the discount rate for time $t$, and $DF_t$ is the discount factor for time $t$.
+The present value of a future cash flow is its value today, discounted at an appropriate interest rate.
+The general formula for present value is:
+$$ PV = \sum_{t=1}^{N} \frac{CF_t}{(1+r_t)^t} $$
+Where:
+*   $CF_t$: Cash flow at time $t$.
+*   $r_t$: Appropriate discount rate for cash flow at time $t$.
+*   $N$: Total number of cash flows.
 
-#### Change in EVE ($\Delta\text{EVE}$)
-The change in EVE ($\Delta\text{EVE}$) due to an interest rate shock is calculated as:
-$$
-\Delta\text{EVE} = \text{EVE}_{\text{shock}} - \text{EVE}_{\text{baseline}}
-$$
-$\Delta\text{EVE}$ is typically reported as a percentage of Tier-1 capital to provide context on its materiality:
-$$
-\Delta\text{EVE} (\% \text{ Tier-1 Capital}) = \frac{\Delta\text{EVE}}{\text{Tier-1 Capital}} \times 100\%
-$$
+For IRRBB EVE calculations, the discount rate $r_t$ typically comprises a risk-free rate plus a liquidity spread, excluding any commercial margin, to ensure EVE reflects pure interest rate risk.
 
-#### Interpretation
-A $\Delta\text{EVE}$ value of, for example, $-5\%$ under a Parallel Up $200\text{bp}$ scenario, means that the economic value of equity is projected to fall by $5\%$ of the bank's Tier-1 capital if interest rates instantaneously rise by $200$ basis points.
+### 2.3 Economic Value of Equity (EVE)
 
-### 2.3 Net Interest Income (NII)
+EVE measures the change in the economic value of a bank's capital, reflecting the present value of all future cash flows from banking book assets and liabilities.
 
-Net Interest Income (NII) reflects the difference between the interest earned on a bank's assets and the interest paid on its liabilities over a specific period, typically a 1-year horizon. It is a measure of the short-to-medium term impact of interest rate changes on a bank's profitability.
+The baseline EVE is calculated as:
+$$ EVE_{baseline} = \sum_{t=1}^{N} \frac{CF_{asset,t}}{(1+r_{baseline,t})^t} - \sum_{t=1}^{M} \frac{CF_{liability,t}}{(1+r_{baseline,t})^t} $$
+Where:
+*   $CF_{asset,t}$: Cash flow from assets at time $t$.
+*   $CF_{liability,t}$: Cash flow from liabilities at time $t$.
+*   $r_{baseline,t}$: Baseline discount rate at time $t$.
 
-#### Definition
-Net Interest Income (NII) is calculated as:
-$$
-\text{NII} = \text{Interest Income from Assets} - \text{Interest Expense on Liabilities}
-$$
-This is an accrual-based measure, meaning it does not involve discounting cash flows.
+The change in EVE ($\Delta EVE$) under a shock scenario is calculated as:
+$$ \Delta EVE = EVE_{scenario} - EVE_{baseline} $$
+Where $EVE_{scenario}$ is calculated using the scenario-specific yield curve.
 
-#### Change in NII ($\Delta\text{NII}$)
-The change in NII ($\Delta\text{NII}$) due to an interest rate shock is calculated for a specified horizon (e.g., 1 year):
-$$
-\Delta\text{NII}_{\text{1-year}} = \text{NII}_{\text{shock, 1-year}} - \text{NII}_{\text{baseline, 1-year}}
-$$
+### 2.4 Net Interest Income (NII)
 
-#### Interpretation
-A $\Delta\text{NII}$ value of, for example, $-10 \text{ million TWD}$ under a Short Rate Down scenario, means that the bank's net interest income for the next 12 months is projected to decrease by $10 \text{ million TWD}$ if short-term rates fall. This typically occurs because assets reprice down faster or to a greater extent than liabilities.
+NII represents the difference between a bank's interest income from assets and its interest expense on liabilities over a specific period (e.g., 1-year or 3-year horizon). It is an accrual-based measure, typically not discounted.
 
-### 2.4 Key Concepts and Methodologies
+$$ NII = \sum \text{Interest Income (from assets)} - \sum \text{Interest Expense (on liabilities)} $$
+The change in NII ($\Delta NII$) under a shock scenario is:
+$$ \Delta NII = NII_{scenario} - NII_{baseline} $$
 
-#### 2.4.1 Cash Flow Generation
-The foundation of IRRBB calculation is the accurate projection of cash flows for all interest-sensitive instruments. This involves:
-*   **Fixed-Rate Instruments**: Cash flows are known and fixed. Only their present value changes with discount rates.
-*   **Floating-Rate Instruments**: Interest payments reset periodically based on a benchmark index (e.g., LIBOR, EIBOR) plus a spread. Cash flows beyond the next reset date are re-projected under the new scenario yield curve.
-*   **Non-Maturity Deposits (NMDs)**: These deposits have no contractual maturity. Their behavioral maturity and repricing behavior (NMD beta) are critical for cash flow and interest rate sensitivity.
+### 2.5 PV01 and Modified Duration
 
-#### 2.4.2 Discounting and Yield Curves
-*   **Baseline Yield Curve**: Represents the current market interest rates across different maturities.
-*   **Scenario Yield Curves**: Constructed by applying specific shifts (shocks) to the baseline yield curve.
-*   **Discount Factors ($DF_t$)**: Derived from the yield curve, used to bring future cash flows to their present value. For EVE, risk-free rates plus a liquidity spread are used, excluding commercial margins to isolate pure interest rate risk.
+**PV01** (Price Value of 01 Basis Point) is the change in the present value of an instrument or portfolio for a 1 basis point (0.01%) change in interest rates. It is an indicator of interest rate sensitivity.
 
-#### 2.4.3 Basel Six Shock Scenarios
-The notebook implements the six standardized interest rate shock scenarios mandated by Basel:
-*   **Parallel Up**: The entire yield curve shifts upwards by a fixed amount (e.g., $+200\text{bp}$).
-*   **Parallel Down**: The entire yield curve shifts downwards by a fixed amount (e.g., $-200\text{bp}$).
-*   **Steepener**: Short-term rates fall, and long-term rates rise, increasing the slope of the yield curve.
-*   **Flattener**: Short-term rates rise, and long-term rates fall, decreasing the slope of the yield curve.
-*   **Short-end Up**: Only short-term rates (e.g., up to 1 year) increase, with longer maturities less affected.
-*   **Short-end Down**: Only short-term rates (e.g., up to 1 year) decrease, with longer maturities less affected.
-These shocks are defined in a `scenarios.yaml` file.
+**Modified Duration ($MD$)** is a measure of the sensitivity of a bond's price to a change in interest rates. It approximates the percentage change in price for a 1% change in yield.
+$$ MD = -\frac{1}{PV} \frac{dPV}{dr} $$
+The approximate change in Present Value ($\Delta PV$) due to a change in interest rate ($\Delta r$) is given by:
+$$ \Delta PV \approx -MD \times PV \times \Delta r $$
+Thus, PV01 can be approximated as:
+$$ PV01 \approx -MD \times PV \times 0.0001 $$
 
-#### 2.4.4 Behavioral Overlays
-*   **Mortgage Prepayments**: Mortgages may be prepaid earlier than their contractual maturity, especially if interest rates fall, allowing borrowers to refinance at lower rates. A baseline annual prepayment rate (e.g., $5\%$ p.a.) is assumed, which can be adjusted under different shock scenarios.
-*   **Non-Maturity Deposit (NMD) Beta**: NMDs do not reprice 1-for-1 with market rates. The NMD beta represents the proportion of a change in market rates that is passed through to the NMD rate. For example, a beta of $0.5$ means that if market rates rise by $100\text{bp}$, the NMD rate will rise by $50\text{bp}$. Behavioral maturities are also assigned to NMDs for bucketing.
+For gap analysis, the partial PV01 for each bucket indicates which time bands contribute most to EVE sensitivity.
 
-#### 2.4.5 Gap Analysis and PV01
-*   **Gap Table**: Organizes cash flows into predefined time buckets (e.g., $0-1\text{M}$, $1-3\text{M}$, $3-6\text{M}$, etc.) and shows the net gap (inflows minus outflows) for each bucket.
-*   **PV01 (Price Value of 01)**: Represents the change in the present value of an instrument or portfolio for a 1 basis point ($0.0001$) parallel shift in the yield curve. It quantifies the interest rate sensitivity.
-$$
-\text{PV01} = -\text{Modified Duration} \times \text{PV} \times 0.0001
-$$
-While a simplified approach can use gap durations, this notebook will implement a full cash-flow revaluation for pedagogical clarity and accuracy.
+### 2.6 Gap Analysis and Basel Repricing Buckets
+
+Gap analysis categorizes interest-sensitive assets and liabilities into predefined time buckets based on their repricing or maturity dates. The "Net Gap" for each bucket is the difference between cash inflows and outflows.
+
+The Basel-style repricing buckets are typically:
+*   0-1 Month (0-1M)
+*   1-3 Months (1-3M)
+*   3-6 Months (3-6M)
+*   6-12 Months (6-12M)
+*   1-2 Years (1-2Y)
+*   2-3 Years (2-3Y)
+*   3-5 Years (3-5Y)
+*   5-10 Years (5-10Y)
+*   Over 10 Years (>10Y)
+
+$$ Net \, Gap_i = \sum CF_{inflow,i} - \sum CF_{outflow,i} \quad \text{for bucket } i $$
+
+### 2.7 Behavioural Models
+
+To accurately model IRRBB, especially for instruments with embedded options or indeterminate maturities, behavioural models are essential.
+
+#### 2.7.1 Mortgage Prepayment Model
+
+Fixed-rate mortgages often include prepayment options. The model quantifies the likelihood of borrowers prepaying their loans, especially when market interest rates fall below their fixed rate. This can be modeled using a logistic regression or survival model, taking into account factors like the borrower's current rate vs. market rates, loan age, etc.
+
+*   **Baseline Prepayment Rate**: A default annual rate (e.g., 5% p.a.).
+*   **Scenario Sensitivity**: Prepayment rates are adjusted under different interest rate scenarios (e.g., higher prepayment in falling rate environments).
+
+#### 2.7.2 Non-Maturity Deposit (NMD) Repricing Beta Model
+
+NMDs (e.g., savings accounts) do not have a contractual maturity. Their effective repricing is behavioral. The beta model describes how the bank's offered rate on NMDs adjusts relative to changes in a benchmark policy rate.
+
+*   **Repricing Beta ($\beta$)**:
+    $$ \beta = \frac{\Delta \text{Deposit Rate}}{\Delta \text{Policy Rate}} $$
+    A beta of 0.5 means that for every 100 bp change in the policy rate, the deposit rate changes by 50 bp.
+*   **Behavioral Maturity**: NMD balances are often assumed to have a "core" portion with a very long or indefinite behavioural maturity and a "non-core" portion that is more sensitive to rate changes or withdrawals.
+
+### 2.8 Interest Rate Shock Scenarios (Basel Prescribed)
+
+The Basel framework mandates specific interest rate shock scenarios to assess IRRBB. These include:
+
+1.  **Parallel Up (+200 bp)**: All points on the yield curve shift up by 200 basis points.
+2.  **Parallel Down (-200 bp)**: All points on the yield curve shift down by 200 basis points.
+3.  **Steepener**: Short rates fall (e.g., -100 bp), and long rates rise (e.g., +100 bp), steepening the yield curve.
+4.  **Flattener**: Short rates rise (e.g., +100 bp), and long rates fall (e.g., -100 bp), flattening the yield curve.
+5.  **Short Rate Up**: Only short-term rates increase (e.g., 1-month to 1-year rates).
+6.  **Short Rate Down**: Only short-term rates decrease (e.g., 1-month to 1-year rates).
+
+For each scenario, a new yield curve is constructed to derive new discount factors and determine repricing rates for floating-rate instruments.
+
+---
 
 ## 3. Code Requirements
 
-This section details the expected structure of the code within the Jupyter Notebook, including libraries, data handling, and function definitions. No actual Python code will be written here, only specifications.
+This section outlines the logical flow of the notebook and the functionalities required for each part, without providing actual code.
 
-### 3.1 Expected Libraries
+### 3.1 Notebook Logical Flow
 
-The following Python libraries are expected to be utilized:
+The notebook will follow the prescribed outline:
 
-*   `pandas`: For data manipulation and analysis, especially with DataFrames.
-*   `numpy`: For numerical operations, array manipulation, and mathematical functions.
-*   `yaml`: For loading configuration files, specifically the `scenarios.yaml`.
-*   `pickle`: For serializing and de-serializing Python objects (e.g., the `IRRBBEngine` class instance).
-*   `matplotlib.pyplot`: For creating static, interactive, and animated visualizations.
-*   `seaborn`: For enhancing the aesthetics of matplotlib plots and for more advanced statistical visualizations.
+#### **Section 1: Introduction**
+*   **Markdown Explanation**: Introduce the notebook's purpose, objectives, and learning goals. Explain the importance of IRRBB management for financial institutions.
 
-### 3.2 Input/Output Expectations
+#### **Section 2: Data Loading / Synthetic Data Generator**
+*   **Markdown Explanation**: Explain the necessity of a robust position dataset. Describe the synthetic data generation process and the structure of `taiwan_irrbb_positions.csv`.
+*   **Code Section**:
+    *   **User Input**: Prompt user to choose between generating synthetic data or loading an existing `taiwan_irrbb_positions.csv`.
+    *   **Synthetic Data Generation Logic**: If chosen, implement a function that generates a pandas DataFrame representing diverse banking book instruments (fixed-rate mortgages, floating-rate corporate loans, term deposits, NMDs, and optionally interest-rate swaps).
+        *   Populate `instrument_id`, `instrument_type`, `side`, `notional_amt`, `currency`, `rate_type`, `fixed_rate`, `float_index`, `spread_bps`, `payment_freq`, `maturity_date`, `next_reprice_date`, `optionality_flag`, `core_fraction`, `prepay_rate`.
+        *   Ensure a minimum of 1,000 rows.
+        *   Randomize balances, coupon/spreads, and payment schedules.
+        *   Use ISO 8601 format for all dates.
+        *   Save the generated data to `irrbb_taiwan_positions.csv`.
+    *   **Data Loading**: Load `irrbb_taiwan_positions.csv` into a pandas DataFrame.
 
-#### 3.2.1 Input Files
-*   `data/taiwan_bankbook_positions.csv`: This is the primary dataset containing the synthetic bank book positions. If this file does not exist, a helper function will generate it.
-    *   **Mandatory Columns**: `instrument_id`, `side` (Asset/Liability/OBS), `notional`, `rate_type`, `coupon_or_spread`, `index` (if floating), `payment_freq`, `maturity_date`, `next_reprice_date`, `currency` (TWD), `embedded_option_flag`, `core_flag` (for NMDs).
-*   `config/scenarios.yaml`: A YAML file defining the parameters for the six Basel interest rate shock scenarios (e.g., shift magnitudes for different tenors).
-*   `config/irrbb_assumptions.yaml`: A YAML file documenting key assumptions like discount curve basis, behavioral rates, and balance sheet treatment.
+#### **Section 3: Exploratory Data Review**
+*   **Markdown Explanation**: Discuss the importance of sanity-checking the loaded data. Explain how to visualize the balance sheet composition.
+*   **Code Section**:
+    *   Display the head of the loaded DataFrame.
+    *   Summarize key statistics (e.g., `df.info()`, `df.describe()`).
+    *   **Visualization**: Generate a bar chart showing the balance-sheet composition (notionals by product type and side - asset/liability).
 
-#### 3.2.2 Output Files
-The notebook will save the following intermediate and final artefacts:
-*   `data/taiwan_bankbook_positions.csv`: The generated synthetic dataset (if not pre-existing).
-*   `interim/irrbb_cashflows.parquet`: A parquet file storing the expanded and processed cash flow DataFrame after applying behavioral overlays and bucketing.
-*   `models/irrbb_part1_engine.pkl`: A pickled instance of the `IRRBBEngine` class, containing the state of the engine post-baseline and shock calculations.
-*   `outputs/basel_scenario_results.parquet`: A parquet file storing the final calculated $\Delta\text{EVE}$ and $\Delta\text{NII}$ results for all scenarios.
+#### **Section 4: Pre-processing & Behavioural Model Calibration**
+*   **Markdown Explanation**: Detail the data cleaning steps and the purpose of behavioural models. Explain the conceptual approach for calibrating mortgage prepayment and NMD beta models.
+*   **Code Section**:
+    *   **Pre-processing Pipeline (`01_data_preparation.py` logic)**:
+        *   Clean the loaded DataFrame:
+            *   Convert date columns to datetime objects.
+            *   Handle missing float spreads (e.g., fill with 0 or a reasonable default based on `rate_type`).
+            *   Tag NMDs as 'core' vs. 'non-core' based on specified rules or a `core_fraction` column.
+        *   Save the cleaned data to `irrbb_taiwan_clean_positions.pkl`.
+    *   **Behavioural Model Calibration**:
+        *   **Mortgage Prepayment Model**:
+            *   Implement logic to simulate or use synthetic historical prepayment data.
+            *   Train a logistic regression or survival model to predict prepayment probabilities.
+            *   Save the trained model to `irrbb_taiwan_mortgage_prepay_model.pkl`.
+        *   **NMD Beta Model**:
+            *   Implement logic to simulate or use synthetic historical policy rate and deposit rate data.
+            *   Train a simple Ordinary Least Squares (OLS) model to derive the NMD beta.
+            *   Save the trained model to `irrbb_taiwan_nmd_beta_model.pkl`.
 
-### 3.3 Algorithms and Functions to be Implemented
+#### **Section 5: Cash-flow & Gap Analysis**
+*   **Markdown Explanation**: Describe the process of generating cash flows, applying behavioural assumptions, and aggregating them into Basel repricing buckets. Explain how the gap table and partial PV01 are derived and interpreted.
+*   **Code Section**:
+    *   **Cash Flow Engine (`02_cashflow_engine.py` logic)**:
+        *   For each instrument in `irrbb_taiwan_clean_positions.pkl`:
+            *   Generate monthly cash flow schedules (principal and interest) based on `notional_amt`, `payment_freq`, `fixed_rate` or `float_index` + `spread_bps`, and `maturity_date`/`next_reprice_date`.
+            *   Apply the calibrated mortgage prepayment model to adjust cash flows for fixed-rate mortgages.
+            *   Apply early withdrawal assumptions for term deposits.
+            *   Apply the calibrated NMD beta model and behavioral maturity assumptions for NMDs.
+        *   Store the exploded cash flow schedule in `irrbb_taiwan_cashflows_long.parquet`.
+    *   **Gap Table Generation**:
+        *   Define standard Basel repricing buckets.
+        *   Aggregate cash inflows and outflows from `irrbb_taiwan_cashflows_long.parquet` into these buckets.
+        *   Calculate Net Gap (Inflows - Outflows) for each bucket.
+        *   Calculate partial PV01 for each bucket (e.g., using bucket mid-points and PVs).
+        *   Save the gap table to `irrbb_taiwan_gap_table.csv`.
+    *   **Visualizations**:
+        *   Generate a heatmap of the `irrbb_taiwan_gap_table.csv`, highlighting repricing mismatches.
+        *   Generate a term-structure plot of partial PV01, showing which time bands drive EVE sensitivity.
 
-The notebook will define functions and a class to encapsulate the IRRBB engine logic. No direct Python code will be written here.
+#### **Section 6: EVE & NII Valuation Engine**
+*   **Markdown Explanation**: Detail the methodology for calculating baseline EVE and NII, and how these metrics are re-calculated under various interest rate shock scenarios. Emphasize the full revaluation approach.
+*   **Code Section**:
+    *   **IRRBB Core Model (`03_irrbb_valuation.py` logic)**:
+        *   **Yield Curve Generation**:
+            *   Define a baseline yield curve (e.g., TWD risk-free curve).
+            *   Construct six scenario yield curves based on Basel shocks (Parallel ±200bp, Steepener, Flattener, Short Up, Short Down).
+        *   **Valuation Calculation**:
+            *   For each instrument and for the baseline and each shock scenario:
+                *   Re-project cash flows considering scenario-specific floating rates and behavioural option exercises (prepayments, withdrawals).
+                *   Calculate the present value of all cash flows using the corresponding scenario yield curve (excluding commercial margins).
+            *   Compute baseline EVE (PV of assets - PV of liabilities).
+            *   Compute EVE for each shock scenario.
+            *   Calculate $\Delta EVE$ for each scenario.
+            *   Project baseline NII for 1-year and 3-year horizons.
+            *   Project NII for each shock scenario for 1-year and 3-year horizons.
+            *   Calculate $\Delta NII$ for each scenario and horizon.
+        *   Save results: `irrbb_taiwan_eve_baseline.pkl`, `irrbb_taiwan_eve_scenarios.pkl`, `irrbb_taiwan_nii_results.pkl`.
 
-#### 3.3.1 Data Generation and Pre-processing
-*   **`generate_taiwan_portfolio()`**:
-    *   **Purpose**: Creates a synthetic `taiwan_bankbook_positions.csv` file if it doesn't exist.
-    *   **Logic**: Randomizes balances/rates while preserving realistic spreads for various instrument types (fixed-rate mortgage, floating-rate corporate loan, term deposit, non-maturity savings, plain-vanilla IRS). Includes behavioral tags and Tier-1 capital figure.
-*   **`load_and_preprocess_data(file_path, assumptions_path)`**:
-    *   **Purpose**: Loads the raw position data and applies initial pre-processing steps.
-    *   **Logic**:
-        1.  Reads `taiwan_bankbook_positions.csv` into a pandas DataFrame.
-        2.  Filters out non-interest-sensitive assets.
-        3.  Expands each instrument's data into a granular, monthly cash flow stream.
-        4.  Applies behavioral overlays:
-            *   Mortgage prepayment (e.g., $5\%$ p.a. baseline).
-            *   NMD beta (e.g., $0.5$ NMD beta) and behavioral maturities for NMDs.
-        5.  Stores the intermediate cash flow DataFrame.
+#### **Section 7: Scenario Results & Interpretation**
+*   **Markdown Explanation**: Provide guidance on how to interpret the calculated $\Delta EVE$ and $\Delta NII$ results, especially in the context of Basel requirements and Tier 1 capital.
+*   **Code Section**:
+    *   **Display Results**:
+        *   Present a structured table comparing $\Delta EVE$ (as % of Tier 1 capital, requiring a user input for Tier 1 capital) and $\Delta NII$ (1-year and 3-year in TWD) across all scenarios.
+        *   (Optional) Generate a waterfall chart illustrating the transition from baseline EVE to shocked EVE for a selected scenario.
 
-#### 3.3.2 `IRRBBEngine` Class
-This class will encapsulate the core IRRBB calculation logic.
+#### **Section 8: Save Models and Artifacts**
+*   **Markdown Explanation**: Emphasize the importance of persisting all generated models and data artifacts for continuity and potential future use (e.g., Part 2 of an exercise).
+*   **Code Section**:
+    *   Verify that all required files (`.pkl` model files, `.csv`, `.parquet` outputs) have been saved under a designated `/models/part1/` directory.
+    *   Display a checklist of saved artifacts for user confirmation.
 
-*   **`__init__(self, positions_df, scenarios_config, assumptions_config)`**:
-    *   **Purpose**: Initializes the engine with pre-processed positions, scenario definitions, and behavioral assumptions.
-    *   **Parameters**:
-        *   `positions_df`: Pandas DataFrame of pre-processed cash flows.
-        *   `scenarios_config`: Dictionary loaded from `scenarios.yaml`.
-        *   `assumptions_config`: Dictionary loaded from `irrbb_assumptions.yaml`.
-*   **`generate_yield_curve(self, base_curve, shock_type, shock_magnitude)`**:
-    *   **Purpose**: Constructs a scenario yield curve based on the baseline and specified shock.
-    *   **Parameters**: `base_curve`, `shock_type` (e.g., 'Parallel Up'), `shock_magnitude`.
-    *   **Output**: A new yield curve (e.g., pandas Series or DataFrame).
-*   **`calculate_discount_factors(self, yield_curve, cashflow_dates)`**:
-    *   **Purpose**: Computes discount factors for given cash flow dates based on the provided yield curve.
-    *   **Logic**: Interpolates discount rates from the yield curve for each cash flow date, then calculates $DF_t = \frac{1}{(1+r_t)^t}$.
-*   **`reprice_floating_instruments(self, cashflows_df, scenario_yield_curve)`**:
-    *   **Purpose**: Adjusts interest cash flows for floating-rate instruments based on the new scenario yield curve.
-    *   **Logic**: For each floating instrument, identifies `next_reprice_date` and re-calculates subsequent interest payments using the scenario yield curve.
-*   **`adjust_behavioral_cashflows(self, cashflows_df, scenario_yield_curve)`**:
-    *   **Purpose**: Modifies behavioral cash flows (e.g., prepayment, NMD withdrawals) in response to interest rate changes.
-    *   **Logic**: If rates fall, increase mortgage prepayment; if rates rise, decrease prepayment. Adjust NMD cash flows based on `NMD beta` and new market rates.
-*   **`calculate_present_value(self, cashflows_df, discount_factors_series)`**:
-    *   **Purpose**: Calculates the present value of all cash flows (assets and liabilities).
-    *   **Logic**: Multiplies each cash flow by its corresponding discount factor and sums them up, separating assets and liabilities.
-    *   **Output**: Total PV of assets, Total PV of liabilities.
-*   **`calculate_nii(self, cashflows_df, horizon_months=12)`**:
-    *   **Purpose**: Calculates the projected Net Interest Income for a specified horizon.
-    *   **Logic**: Sums interest income from assets and interest expense from liabilities over the horizon, without discounting.
-    *   **Output**: Total NII.
-*   **`run_baseline_scenario(self)`**:
-    *   **Purpose**: Calculates baseline EVE and NII using current market rates.
-    *   **Logic**: Calls `calculate_present_value` and `calculate_nii` with the initial cash flows and baseline yield curve.
-*   **`run_shock_scenario(self, scenario_name)`**:
-    *   **Purpose**: Applies a specific interest rate shock and calculates $\Delta\text{EVE}$ and $\Delta\text{NII}$.
-    *   **Logic**:
-        1.  Generates the scenario yield curve using `generate_yield_curve`.
-        2.  Calculates new discount factors using `calculate_discount_factors`.
-        3.  Reprices floating instruments using `reprice_floating_instruments`.
-        4.  Adjusts behavioral cash flows using `adjust_behavioral_cashflows`.
-        5.  Calculates scenario EVE and NII using the modified cash flows and discount factors.
-        6.  Computes $\Delta\text{EVE}$ and $\Delta\text{NII}$ relative to baseline.
-    *   **Output**: Dictionary or DataFrame row with $\Delta\text{EVE}$ (% Tier-1) and $\Delta\text{NII}$ (year 1) for the scenario.
-*   **`run_all_scenarios(self)`**:
-    *   **Purpose**: Orchestrates the execution of all six Basel shock scenarios.
-    *   **Logic**: Iterates through scenarios defined in `scenarios.yaml`, calls `run_shock_scenario` for each, and aggregates results.
-    *   **Output**: A pandas DataFrame containing results for all scenarios.
+### 3.2 Expected Libraries
 
-#### 3.3.3 Visualization Functions
-*   **`plot_gap_profile(cashflows_df)`**:
-    *   **Purpose**: Generates a bar chart of the net gap by time-bucket.
-    *   **Logic**: Groups the processed cash flows by predefined time buckets (e.g., Basel buckets), calculates the net sum of inflows and outflows for each, and plots.
-*   **`display_scenario_results(results_df, tier1_capital)`**:
-    *   **Purpose**: Displays the $\Delta\text{EVE}$ and $\Delta\text{NII}$ results in a clear, formatted table.
-    *   **Logic**: Takes the aggregated results DataFrame, calculates $\Delta\text{EVE}$ as a percentage of Tier-1 capital, and applies appropriate formatting (e.g., using `pandas.DataFrame.style.format` for percentages, currency).
+The notebook will utilize the following Python libraries:
 
-### 3.4 Logical Flow of the Notebook
+*   `pandas` for data manipulation and analysis.
+*   `numpy` for numerical operations.
+*   `scipy` for scientific computing, potentially for yield curve interpolation or optimization.
+*   `statsmodels` or `scikit-learn` for statistical modeling and behavioural model calibration.
+*   `matplotlib.pyplot` and `seaborn` for data visualization.
 
-The notebook will follow a clear, sequential flow:
+### 3.3 Input/Output Expectations
 
-1.  **Notebook Setup and Imports**:
-    *   Markdown cell: Title, description, learning outcomes.
-    *   Code cell: Import necessary libraries (pandas, numpy, yaml, matplotlib, seaborn, pickle).
-    *   Code cell: Define file paths for data, config, and output directories. Ensure output directories exist.
+*   **Inputs**:
+    *   User-defined parameters for synthetic data generation (e.g., number of fixed-rate loans, floating-rate loans, term deposits, NMDs, bonds).
+    *   An initial TWD yield curve as the risk-free base.
+    *   Tier 1 Capital value for $\Delta EVE$ percentage calculation.
+*   **Outputs (Files)**: All output files will use the `irrbb_taiwan_` prefix and be saved under `/models/part1/`.
+    *   `irrbb_taiwan_positions.csv`: Initial position dataset.
+    *   `irrbb_taiwan_clean_positions.pkl`: Cleaned position dataset.
+    *   `irrbb_taiwan_mortgage_prepay_model.pkl`: Calibrated mortgage prepayment model.
+    *   `irrbb_taiwan_nmd_beta_model.pkl`: Calibrated NMD beta model.
+    *   `irrbb_taiwan_cashflows_long.parquet`: Detailed cash flow schedules.
+    *   `irrbb_taiwan_gap_table.csv`: Aggregated gap analysis results.
+    *   `irrbb_taiwan_eve_baseline.pkl`: Baseline EVE calculation result.
+    *   `irrbb_taiwan_eve_scenarios.pkl`: EVE results for all shock scenarios.
+    *   `irrbb_taiwan_nii_results.pkl`: NII results for baseline and all shock scenarios.
 
-2.  **Theoretical Foundations (Markdown Cells)**:
-    *   Detailed explanations of IRRBB, EVE, NII, with LaTeX formulas as specified in Section 2.
-    *   Explanation of cash flow generation, discounting, yield curves, and Basel shock scenarios.
-    *   Discussion of behavioral overlays and gap analysis.
+### 3.4 Visualizations
 
-3.  **Data Loading and Pre-processing**:
-    *   Markdown cell: Explain data requirements, synthetic data generation, and pre-processing steps.
-    *   Code cell:
-        *   Call `generate_taiwan_portfolio()` if `taiwan_bankbook_positions.csv` is not present.
-        *   Load `taiwan_bankbook_positions.csv`.
-        *   Load `scenarios.yaml` and `irrbb_assumptions.yaml`.
-        *   Call `load_and_preprocess_data()` to filter, expand, and apply behavioral overlays.
-        *   Display head of the processed cash flow DataFrame.
-        *   Save processed cash flows to `interim/irrbb_cashflows.parquet`.
+The following visualizations will be generated:
 
-4.  **Baseline Gap Profile Analysis**:
-    *   Markdown cell: Explain gap analysis and its importance.
-    *   Code cell:
-        *   Call `plot_gap_profile()` to visualize the baseline net gap.
-        *   Optional: Display a table of PV01 by bucket.
+*   **Balance-sheet composition bar chart**: Displays notional amounts by instrument type and asset/liability side.
+*   **Gap table heat-map**: Visualizes net cash flows across specified time buckets, highlighting repricing mismatches.
+*   **Term-structure plot of partial PV01**: Illustrates the contribution of each time bucket to the overall EVE sensitivity.
+*   **Scenario comparison table**: A tabular display showing $\Delta EVE$ (as % of Tier 1 capital) and $\Delta NII$ (1-year and 3-year horizons) for all six Basel shock scenarios.
+*   **(Optional) Waterfall chart**: A visual breakdown of EVE change from baseline to a selected shock scenario.
 
-5.  **IRRBB Engine Execution**:
-    *   Markdown cell: Introduce the `IRRBBEngine` class and explain its purpose (revaluation under shocks).
-    *   Code cell:
-        *   Instantiate `IRRBBEngine` with loaded data and configurations.
-        *   Call `run_baseline_scenario()` to calculate baseline EVE and NII.
-        *   Call `run_all_scenarios()` to execute all Basel shocks and collect results.
-        *   Display the raw results DataFrame.
-        *   Save `IRRBBEngine` instance to `models/irrbb_part1_engine.pkl`.
-        *   Save scenario results to `outputs/basel_scenario_results.parquet`.
-
-6.  **Results Visualization and Interpretation**:
-    *   Markdown cell: Explain how to interpret $\Delta\text{EVE}$ and $\Delta\text{NII}$ results.
-    *   Code cell:
-        *   Call `display_scenario_results()` to present the final, formatted table of $\Delta\text{EVE}$ and $\Delta\text{NII}$ for all scenarios.
-        *   Add markdown commentary to interpret specific results (e.g., why Parallel Up causes $\Delta\text{EVE}$ to fall if assets have longer duration than liabilities).
-
-7.  **Conclusion and Hand-off**:
-    *   Markdown cell: Summarize the notebook's achievements and reiterate learning outcomes.
-    *   Markdown cell: Provide clear instructions on where intermediate and final artefacts are saved, specifically noting the `pickle.load()` and `pd.read_parquet()` for "Part 2" hand-off.
-
-### 3.5 Visualizations to be Generated
-
-*   **Gap Profile Bar Chart**:
-    *   **Type**: Bar chart.
-    *   **X-axis**: Time Buckets (e.g., 0-1M, 1-3M, 3-6M, 6-12M, 1-2Y, 2-3Y, 3-5Y, 5-10Y, >10Y).
-    *   **Y-axis**: Net Gap (Inflows - Outflows) in currency units.
-    *   **Purpose**: To show the distribution of interest rate sensitivity across different time horizons under the baseline.
-
-*   **Scenario Results Table**:
-    *   **Type**: Pandas DataFrame styled as a table.
-    *   **Columns**: `Scenario`, `ΔEVE (% Tier-1)`, `ΔNII (Year 1)`.
-    *   **Rows**: Each of the six Basel shock scenarios.
-    *   **Formatting**:
-        *   `ΔEVE (% Tier-1)`: Formatted as a percentage with 1-2 decimal places.
-        *   `ΔNII (Year 1)`: Formatted as currency (e.g., TWD) with appropriate delimiters and no decimal places for large figures.
-    *   **Purpose**: To provide a clear and concise summary of the impact of each interest rate shock on the bank's economic value and earnings.
+---
 
 ## 4. Additional Notes or Instructions
 
 ### 4.1 Assumptions
 
-The model implemented in this notebook operates under the following key assumptions:
-
-*   **Static Balance Sheet**: The analysis assumes a static balance sheet, meaning there is no new business growth, and existing instruments run off at their contractual or behavioral maturities without replacement, unless explicitly specified for a particular behavioral overlay.
-*   **Single Currency**: For simplicity, all instruments are assumed to be in a single currency (Taiwan Dollar - TWD). Multi-currency aggregation complexities are not covered.
-*   **Discount Curve Basis**: For EVE calculations, cash flows are discounted using a risk-free rate (approximated by market yield curves) plus an appropriate liquidity spread. Commercial margins are explicitly excluded to isolate pure interest rate risk.
-*   **Behavioral Rates**: Specific behavioral assumptions are hard-coded or configured via `irrbb_assumptions.yaml`:
-    *   Mortgage Prepayment: A baseline annual prepayment rate of $5\%$ p.a. is applied. This rate adjusts dynamically based on the direction of interest rate shocks (e.g., higher prepayment if rates fall, lower if rates rise).
-    *   NMD Beta: A Non-Maturity Deposit (NMD) beta of $0.5$ is applied, meaning $50\%$ of market rate changes are passed through to NMD rates.
-*   **Instantaneous Shocks**: Interest rate shocks for EVE calculations are assumed to be instantaneous and permanent.
-*   **NII Horizon**: Net Interest Income calculations are performed over a 1-year horizon.
-*   **No Credit Spread Movements**: The model does not account for changes in credit spreads, focusing solely on the impact of risk-free rate movements.
-*   **No Volume Shifts**: The analysis focuses on rate effects; volume shifts due to behavioral responses are simplified or ignored to maintain a static balance sheet for the purpose of this exercise.
+*   All dates in generated and processed data will conform to ISO 8601 format.
+*   For simplicity, assume a single currency (Taiwanese Dollar, TWD) for most instruments unless explicitly stated otherwise or required for a multi-currency exercise. The TWD yield curve will serve as the risk-free base.
+*   A baseline annual prepayment rate for mortgages of 5% p.a. is assumed, adjustable based on interest rate scenarios.
+*   A baseline NMD repricing beta ($\beta$) of 0.5 is assumed.
+*   For NII projection, a static balance sheet is assumed (no new growth, run-off not replaced).
+*   Discount curves used for EVE calculations will exclude commercial margins and incorporate a liquidity spread, aligning with regulatory guidance to isolate pure interest rate risk.
+*   All significant assumptions, including those regarding behavioural models and market data, will be explicitly documented inline within the notebook.
 
 ### 4.2 Constraints
 
-*   **Synthetic Data Only**: The notebook relies solely on a synthetic dataset for demonstration purposes and does not connect to real-world financial systems or customer data.
-*   **Fixed Basel Scenarios**: The six Basel interest rate shock scenarios are hard-coded and loaded from `scenarios.yaml`; custom or dynamic scenario generation is not a primary feature.
-*   **No User Input UI**: Interaction is via modifying code cells directly; there is no graphical user interface (GUI) for input parameters.
+*   The synthetic data generator must produce a minimum of 1,000 rows, covering specified instrument types and mandatory columns.
+*   All output files and saved models must adhere to the `irrbb_taiwan_*` naming convention and be stored persistently under the `/models/part1/` directory.
+*   The project will strictly avoid deployment-specific steps or references to external platforms like Streamlit.
+*   The specification explicitly prohibits the inclusion of actual Python code.
 
 ### 4.3 Customization Instructions
 
-Users can modify certain aspects of the model within the notebook's code cells to explore different scenarios or sensitivities:
-
-*   **Behavioral Overlay Parameters**: The baseline mortgage prepayment rate and NMD beta can be adjusted within the `irrbb_assumptions.yaml` file or directly in the code where the `IRRBBEngine` is initialized.
-*   **NII Horizon**: The `horizon_months` parameter in the `calculate_nii` function can be changed to analyze NII for different timeframes (e.g., 3 years).
-*   **Synthetic Data Generation**: Users can inspect and modify the `generate_taiwan_portfolio()` function to understand how the synthetic data is created and potentially introduce different instrument types or characteristics.
-
-### 4.4 Hand-off to Future Development (Part 2)
-
-This notebook is designed as "Part 1" of a larger project. The following artefacts are explicitly saved for seamless integration into a "Part 2" or subsequent analysis:
-
-*   **IRRBB Engine Object**: The `IRRBBEngine` class instance, containing the calculated baseline and shocked states, is saved as a pickled object: `models/irrbb_part1_engine.pkl`. Future notebooks can load this object using `pickle.load()` to continue analysis without re-running the full engine.
-*   **Scenario Results**: The comprehensive DataFrame containing the $\Delta\text{EVE}$ and $\Delta\text{NII}$ results for all Basel scenarios is saved as a parquet file: `outputs/basel_scenario_results.parquet`. This file can be easily loaded using `pd.read_parquet()` for further visualization, reporting, or advanced analysis.
-*   **Cash Flow Data**: The expanded and pre-processed cash flows are saved to `interim/irrbb_cashflows.parquet` for granular analysis in subsequent steps.
+*   Users will be able to specify the number of instruments of each type (e.g., number of fixed-rate mortgages, floating-rate loans) during synthetic data generation.
+*   The baseline parameters for behavioural models (e.g., initial mortgage prepayment rate, NMD beta) can be adjusted by the user.
+*   The notebook can be extended to include multi-currency analysis by introducing USD or other currency interest rate swaps, if desired, by modifying the synthetic data generation and yield curve management sections.
+*   Users can customize visualization parameters (e.g., chart titles, colors) using standard Matplotlib/Seaborn functions.
+```
