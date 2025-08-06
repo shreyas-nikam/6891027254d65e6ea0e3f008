@@ -1,160 +1,176 @@
 import pytest
 import pandas as pd
-from datetime import date, timedelta
-from scipy.interpolate import interp1d
-import numpy as np
+import os
+from datetime import datetime
 
-# definition_1d2f29e6c2d040bea1523b43882ee0bf
-# Assume IRRBBEngine class is defined in definition_1d2f29e6c2d040bea1523b43882ee0bf
-# For testing purposes, we define a mock version here that matches the signature and expected behavior.
-class IRRBBEngine:
-    def __init__(self, valuation_date_str="2023-01-01"):
-        self.valuation_date = pd.to_datetime(valuation_date_str)
+# Keep the your_module block as it is. DO NOT REPLACE or REMOVE the block.
+# definition_ff760c98be3a486e98510eb0aa9da3bb
+from definition_ff760c98be3a486e98510eb0aa9da3bb import preprocess_positions_data
 
-    def calculate_discount_factors(self, yield_curve, cashflow_dates):
-        """
-        Computes discount factors for a given set of cash flow dates based on the provided yield curve.
-        The function interpolates discount rates from the yield curve for each cash flow date
-        and then calculates the discount factors (DF_t = 1 / (1 + r_t)^t).
-        
-        Arguments:
-            yield_curve (pandas.Series or pandas.DataFrame) - The yield curve to use for discounting.
-            cashflow_dates (list or pandas.Series) - A list or Series of dates for which to calculate discount factors.
-        
-        Output:
-            A Series of discount factors corresponding to the input cash flow dates.
-        """
-        if not isinstance(yield_curve, (pd.Series, pd.DataFrame)):
-            raise TypeError("yield_curve must be a pandas Series or DataFrame.")
-        if not isinstance(cashflow_dates, (list, pd.Series)):
-            raise TypeError("cashflow_dates must be a list or pandas Series.")
+# Define a temporary directory for test outputs to ensure clean test runs
+@pytest.fixture(scope="module")
+def temp_dir():
+    test_dir = "test_output_temp_dir"
+    os.makedirs(test_dir, exist_ok=True)
+    yield test_dir
+    # Clean up after all tests in the module are done
+    for f in os.listdir(test_dir):
+        os.remove(os.path.join(test_dir, f))
+    os.rmdir(test_dir)
 
-        # Handle empty inputs
-        if yield_curve.empty or not cashflow_dates:
-            return pd.Series(dtype=float)
+def test_preprocess_positions_data_happy_path(temp_dir):
+    """
+    Test the basic functionality with a typical input:
+    - Date columns conversion
+    - Missing float spreads handling (filling with 0)
+    - NMD tagging ('core' vs 'non-core')
+    - Saving to PKL file
+    """
+    input_data = {
+        'instrument_id': [1, 2, 3, 4, 5],
+        'instrument_type': ['Loan', 'NMD', 'Bond', 'NMD', 'Deposit'],
+        'maturity_date': ['2023-01-15', 'N/A', '2025-12-31', '2024-06-01', '2023-03-01'],
+        'next_reprice_date': ['2022-07-01', 'N/A', '2023-01-01', 'N/A', '2023-03-01'],
+        'spread_bps': [10.5, None, 5.0, '', 15.0], # Test float, None, and empty string
+        'core_fraction': [0.0, 0.8, 0.0, 0.0, 0.0], # Test core_fraction for NMD tagging
+        'notional_amt': [1000, 500, 2000, 750, 1200]
+    }
+    input_df = pd.DataFrame(input_data)
+    output_file = os.path.join(temp_dir, 'happy_path_clean_positions.pkl')
 
-        # Ensure yield_curve index is datetime for consistent processing
-        if not isinstance(yield_curve.index, pd.DatetimeIndex):
-            try:
-                yield_curve.index = pd.to_datetime(yield_curve.index)
-            except Exception as e:
-                raise ValueError(f"Could not convert yield_curve index to datetime: {e}")
+    preprocess_positions_data(input_df, output_file)
 
-        # Convert cashflow_dates to pandas Series of datetime
-        try:
-            if isinstance(cashflow_dates, list):
-                # Using pd.to_datetime for better error handling and vectorized conversion
-                cashflow_dates_series = pd.to_datetime(cashflow_dates)
-            else: # pandas Series
-                cashflow_dates_series = pd.to_datetime(cashflow_dates)
-        except Exception as e:
-            raise ValueError(f"Could not convert cashflow_dates to datetime: {e}")
+    assert os.path.exists(output_file)
+    cleaned_df = pd.read_pickle(output_file)
 
-        # Extract rates: if DataFrame, take the first column's values. If Series, take values directly.
-        if isinstance(yield_curve, pd.DataFrame):
-            # Assuming the first column contains the rates if DataFrame
-            yc_rates = yield_curve.iloc[:, 0].values.astype(float)
-        else: # pd.Series
-            yc_rates = yield_curve.values.astype(float)
+    # Assert date columns are datetime objects and handled NaT correctly
+    assert pd.api.types.is_datetime64_any_dtype(cleaned_df['maturity_date'])
+    assert pd.api.types.is_datetime64_any_dtype(cleaned_df['next_reprice_date'])
+    # N/A values in 'maturity_date' and 'next_reprice_date' for NMDs should be NaT
+    assert pd.isna(cleaned_df.loc[cleaned_df['instrument_type'] == 'NMD', 'maturity_date']).all()
+    assert pd.isna(cleaned_df.loc[cleaned_df['instrument_type'] == 'NMD', 'next_reprice_date']).all()
+    assert cleaned_df.loc[0, 'maturity_date'] == datetime(2023, 1, 15)
 
-        # Get tenors (in days from valuation_date) from the yield curve
-        yc_tenors_days = np.array([(d - self.valuation_date).days for d in yield_curve.index])
-        
-        # Sort tenors and rates for interpolation
-        sort_idx = np.argsort(yc_tenors_days)
-        yc_tenors_days_sorted = yc_tenors_days[sort_idx]
-        yc_rates_sorted = yc_rates[sort_idx]
-        
-        # Create interpolation function
-        # Using bounds_error=False and fill_value to clamp rates at the first/last point.
-        # This is standard practice in finance for yield curve extrapolation (flat extrapolation).
-        interpolator = interp1d(yc_tenors_days_sorted, yc_rates_sorted, kind='linear', 
-                                  bounds_error=False, fill_value=(yc_rates_sorted[0], yc_rates_sorted[-1]))
+    # Assert spread_bps are numeric and NaNs/empty strings are filled with 0
+    assert pd.api.types.is_numeric_dtype(cleaned_df['spread_bps'])
+    assert cleaned_df.loc[1, 'spread_bps'] == 0.0 # None
+    assert cleaned_df.loc[3, 'spread_bps'] == 0.0 # ''
 
-        discount_factors = []
-        original_index = cashflow_dates_series.index # Preserve original index for the output Series
+    # Assert NMDs are tagged 'core' vs 'non-core'
+    # Assuming the function adds a column named 'nmd_classification'
+    assert 'nmd_classification' in cleaned_df.columns
+    assert cleaned_df.loc[1, 'nmd_classification'] == 'core' # NMD with core_fraction > 0.5 (assuming threshold)
+    assert cleaned_df.loc[3, 'nmd_classification'] == 'non-core' # NMD with core_fraction == 0
+    assert cleaned_df.loc[0, 'nmd_classification'] == 'N/A' # Not an NMD
 
-        for cf_date in cashflow_dates_series:
-            t_days = (cf_date - self.valuation_date).days
-            
-            if t_days < 0:
-                raise ValueError(f"Cash flow date '{cf_date.strftime('%Y-%m-%d')}' cannot be before the valuation date '{self.valuation_date.strftime('%Y-%m-%d')}' for discount factor calculation.")
-            
-            # Get interpolated rate, .item() gets scalar from numpy array
-            r_t = interpolator(t_days).item() 
-            
-            # Convert t_days to years for the formula (using 365.25 for average days in a year)
-            t_years = t_days / 365.25 
-            
-            if (1 + r_t) <= 0:
-                raise ValueError(f"Calculated rate {r_t} leads to (1+r_t) <= 0, which is invalid for discount factor calculation, especially for fractional t.")
-            
-            # Calculate discount factor
-            df_t = 1 / ((1 + r_t)**t_years)
-            discount_factors.append(df_t)
-        
-        return pd.Series(discount_factors, index=original_index)
+def test_preprocess_positions_data_empty_dataframe(temp_dir):
+    """
+    Test handling of an empty input DataFrame.
+    The function should run without error and save an empty PKL file
+    with the expected schema (columns).
+    """
+    input_df = pd.DataFrame(columns=[
+        'instrument_id', 'instrument_type', 'maturity_date',
+        'next_reprice_date', 'spread_bps', 'core_fraction'
+    ])
+    output_file = os.path.join(temp_dir, 'empty_df_clean_positions.pkl')
 
-# /definition_1d2f29e6c2d040bea1523b43882ee0bf # DO NOT REPLACE or REMOVE this block
+    preprocess_positions_data(input_df, output_file)
 
-# Initialize the IRRBBEngine with a fixed valuation date for consistent testing
-ENGINE = IRRBBEngine(valuation_date_str="2023-01-01")
+    assert os.path.exists(output_file)
+    cleaned_df = pd.read_pickle(output_file)
 
-@pytest.mark.parametrize("yield_curve_data, cashflow_dates_data, expected_dfs, expected_exception", [
-    # Test Case 1: Happy Path - Standard Calculation & Interpolation
-    (
-        pd.Series(data=[0.01, 0.02, 0.03], index=pd.to_datetime(['2023-01-01', '2024-01-01', '2025-01-01'])),
-        [pd.to_datetime('2023-07-01'), pd.to_datetime('2024-01-01')],
-        [1 / ((1 + 0.015)**(182.625/365.25)), 1 / ((1 + 0.02)**(365.25/365.25))],
-        None
-    ),
-    # Test Case 2: Edge Case - Empty Cashflow Dates
-    (
-        pd.Series(data=[0.01, 0.02], index=pd.to_datetime(['2023-01-01', '2024-01-01'])),
-        [],
-        [], # Expected empty Series
-        None
-    ),
-    # Test Case 3: Edge Case - Extrapolation (before and after curve range)
-    # Valuation: 2023-01-01
-    # YC: 2024-01-01 (1yr, rate 0.02), 2025-01-01 (2yr, rate 0.03)
-    # CF1: 2023-07-01 (0.5yr) -> Uses first YC rate (0.02)
-    # CF2: 2026-01-01 (3yr) -> Uses last YC rate (0.03)
-    (
-        pd.Series(data=[0.02, 0.03], index=pd.to_datetime(['2024-01-01', '2025-01-01'])),
-        [pd.to_datetime('2023-07-01'), pd.to_datetime('2026-01-01')],
-        [1 / ((1 + 0.02)**(182.625/365.25)), 1 / ((1 + 0.03)**(1095.75/365.25))], # 1095.75 days for 3 years
-        None
-    ),
-    # Test Case 4: Edge Case - Zero/Negative but Valid Rates
-    # Valuation: 2023-01-01
-    # YC: 2023-01-01 (0yr, rate 0.00), 2023-07-01 (0.5yr, rate -0.005), 2024-01-01 (1yr, rate 0.01)
-    # CF1: 2023-01-01 (0yr) -> Rate 0.00
-    # CF2: 2023-04-01 (approx 0.25yr) -> Rate interpolates between 0.00 and -0.005. (90/182.625)*(-0.005) = -0.002464
-    # CF3: 2024-01-01 (1yr) -> Rate 0.01
-    (
-        pd.Series(data=[0.00, -0.005, 0.01], index=pd.to_datetime(['2023-01-01', '2023-07-01', '2024-01-01'])),
-        [pd.to_datetime('2023-01-01'), pd.to_datetime('2023-04-01'), pd.to_datetime('2024-01-01')],
-        [1 / ((1 + 0.00)**0.0), 1 / ((1 + (-0.002464))**(90/365.25)), 1 / ((1 + 0.01)**1.0)],
-        None
-    ),
-    # Test Case 5: Error Handling - Invalid Inputs (Non-date strings, Dates before valuation)
-    (
-        pd.Series(data=[0.01, 0.02], index=pd.to_datetime(['2023-01-01', '2024-01-01'])),
-        ['invalid_date', pd.to_datetime('2022-12-01')], # First item is non-date, second is before valuation_date
-        None,
-        ValueError # pd.to_datetime for 'invalid_date' will raise ValueError first
-    ),
-])
-def test_calculate_discount_factors(yield_curve_data, cashflow_dates_data, expected_dfs, expected_exception):
-    if expected_exception:
-        with pytest.raises(expected_exception):
-            ENGINE.calculate_discount_factors(yield_curve_data, cashflow_dates_data)
-    else:
-        result = ENGINE.calculate_discount_factors(yield_curve_data, cashflow_dates_data)
-        if len(expected_dfs) == 0:
-            assert result.empty
-            assert result.dtype == float
-        else:
-            # Using np.isclose for floating-point comparison
-            assert all(np.isclose(result.values, np.array(expected_dfs), rtol=1e-5, atol=1e-8))
+    assert cleaned_df.empty
+    # Verify that expected columns (including newly derived ones) are present
+    assert 'maturity_date' in cleaned_df.columns
+    assert 'spread_bps' in cleaned_df.columns
+    assert 'nmd_classification' in cleaned_df.columns
+
+def test_preprocess_positions_data_missing_critical_column(temp_dir):
+    """
+    Test behavior when a critical column (e.g., 'instrument_type' for NMD tagging)
+    is missing from the input DataFrame. This should typically raise an error
+    as core logic cannot proceed without it.
+    """
+    # Missing 'instrument_type' which is crucial for NMD tagging
+    input_data = {
+        'instrument_id': [1, 2],
+        # 'instrument_type': missing
+        'maturity_date': ['2023-01-15', '2024-01-15'],
+        'next_reprice_date': ['2022-07-01', '2023-01-01'],
+        'spread_bps': [10.5, None],
+        'core_fraction': [0.0, 0.8]
+    }
+    input_df = pd.DataFrame(input_data)
+    output_file = os.path.join(temp_dir, 'missing_cols_clean_positions.pkl')
+
+    # Expecting a KeyError if 'instrument_type' is accessed directly for NMD logic
+    with pytest.raises(KeyError, match="'instrument_type'"):
+        preprocess_positions_data(input_df, output_file)
+    
+    # Assert that no output file is created on error
+    assert not os.path.exists(output_file)
+
+def test_preprocess_positions_data_invalid_date_formats(temp_dir):
+    """
+    Test handling of invalid date strings in date columns.
+    Expected behavior is to convert them to NaT (Not a Time) without raising an error.
+    """
+    input_data = {
+        'instrument_id': [1, 2, 3],
+        'instrument_type': ['Loan', 'Deposit', 'Bond'],
+        'maturity_date': ['2023-01-15', 'INVALID_DATE_FORMAT', '2025/12/31'], # Valid, Invalid, Different Valid
+        'next_reprice_date': ['2022-07-01', 'ANOTHER_BAD_DATE', None], # Valid, Invalid, None
+        'spread_bps': [10.0, 5.0, 2.0],
+        'core_fraction': [0.0, 0.0, 0.0]
+    }
+    input_df = pd.DataFrame(input_data)
+    output_file = os.path.join(temp_dir, 'invalid_dates_clean_positions.pkl')
+
+    preprocess_positions_data(input_df, output_file)
+
+    assert os.path.exists(output_file)
+    cleaned_df = pd.read_pickle(output_file)
+
+    # Assert that invalid date strings become NaT
+    assert pd.isna(cleaned_df.loc[1, 'maturity_date'])
+    assert pd.isna(cleaned_df.loc[1, 'next_reprice_date'])
+    # Assert that valid but differently formatted dates are parsed
+    assert cleaned_df.loc[2, 'maturity_date'] == datetime(2025, 12, 31)
+    # Assert that None in date columns becomes NaT
+    assert pd.isna(cleaned_df.loc[2, 'next_reprice_date'])
+    
+    # Ensure columns are still of datetime type even with NaT values
+    assert pd.api.types.is_datetime64_any_dtype(cleaned_df['maturity_date'])
+    assert pd.api.types.is_datetime64_any_dtype(cleaned_df['next_reprice_date'])
+
+def test_preprocess_positions_data_spread_bps_edge_cases(temp_dir):
+    """
+    Test `spread_bps` column handling with various non-numeric values and NaNs.
+    It should be converted to numeric, and non-numeric/NaN values should be filled with 0.
+    """
+    input_data = {
+        'instrument_id': [1, 2, 3, 4, 5],
+        'instrument_type': ['Loan', 'Deposit', 'Bond', 'Loan', 'NMD'],
+        'maturity_date': ['2023-01-01'] * 5,
+        'next_reprice_date': ['2023-01-01'] * 5,
+        'spread_bps': [10.5, None, '5', 'abc', pd.NA], # Mixed types: float, None, string num, string non-num, pd.NA
+        'core_fraction': [0.0, 0.0, 0.0, 0.0, 0.5]
+    }
+    input_df = pd.DataFrame(input_data)
+    output_file = os.path.join(temp_dir, 'spread_bps_edge_cases_clean_positions.pkl')
+
+    preprocess_positions_data(input_df, output_file)
+
+    assert os.path.exists(output_file)
+    cleaned_df = pd.read_pickle(output_file)
+
+    # Assert spread_bps is numeric after processing
+    assert pd.api.types.is_numeric_dtype(cleaned_df['spread_bps'])
+
+    # Assert values are converted and filled correctly
+    assert cleaned_df.loc[0, 'spread_bps'] == 10.5
+    assert cleaned_df.loc[1, 'spread_bps'] == 0.0 # None should be filled with 0
+    assert cleaned_df.loc[2, 'spread_bps'] == 5.0 # '5' (string) should be converted to 5.0 (float)
+    assert cleaned_df.loc[3, 'spread_bps'] == 0.0 # 'abc' should become NaN then filled with 0
+    assert cleaned_df.loc[4, 'spread_bps'] == 0.0 # pd.NA should be filled with 0
