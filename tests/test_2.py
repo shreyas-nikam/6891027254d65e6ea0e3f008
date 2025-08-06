@@ -1,128 +1,79 @@
 import pytest
 import pandas as pd
+import io
+import numpy as np
 
-# Keep the definition_093694b932d746f7a0b810988acfd7d3 block as it is. DO NOT REPLACE or REMOVE the block.
-from definition_093694b932d746f7a0b810988acfd7d3 import IRRBBEngine # Assuming IRRBBEngine is the class under test
-# End of definition_093694b932d746f7a0b810988acfd7d3 block
-
-
-# --- Fixtures for mock data ---
-
-@pytest.fixture
-def mock_positions_df():
-    """Returns a mock pandas DataFrame for positions, simulating pre-processed cash flows."""
-    return pd.DataFrame({
-        'instrument_id': [101, 102, 103],
-        'notional': [1_000_000, 500_000, 2_000_000],
-        'rate_type': ['Fixed', 'Floating', 'Fixed'],
-        'maturity_date': pd.to_datetime(['2025-06-30', '2026-12-31', '2027-03-15']),
-        'side': ['Asset', 'Liability', 'Asset']
-    })
-
-@pytest.fixture
-def mock_empty_positions_df():
-    """Returns an empty pandas DataFrame, simulating a valid but empty input."""
-    return pd.DataFrame(columns=[
-        'instrument_id', 'notional', 'rate_type', 'maturity_date', 'side'
-    ])
-
-@pytest.fixture
-def mock_scenarios_config():
-    """Returns a mock dictionary for scenarios configuration, as loaded from 'scenarios.yaml'."""
-    return {
-        'Parallel Up': {'shift_bps': 200, 'curve_points': [0.25, 0.5, 1, 2, 5, 10]},
-        'Parallel Down': {'shift_bps': -200, 'curve_points': [0.25, 0.5, 1, 2, 5, 10]},
-        'Steepener': {'short_shift_bps': -50, 'long_shift_bps': 50, 'pivot_tenor': 2}
-    }
-
-@pytest.fixture
-def mock_assumptions_config():
-    """Returns a mock dictionary for behavioral assumptions, as loaded from 'irrbb_assumptions.yaml'."""
-    return {
-        'discount_curve_basis': 'risk_free_plus_liquidity',
-        'mortgage_prepayment_rate_annual': 0.05,
-        'NMD_beta': 0.5,
-        'tier1_capital': 100_000_000 # Example value based on specification
-    }
+# Keep a placeholder definition_b1918b60bc4341ff92453be9f49b7950 for the import of the module.
+# Keep the `your_module` block as it is. DO NOT REPLACE or REMOVE the block.
+from definition_b1918b60bc4341ff92453be9f49b7950 import display_dataframe_info
 
 
-# --- Test Cases ---
+@pytest.mark.parametrize("input, expected", [
+    # Test Case 1: Standard DataFrame with multiple columns and rows
+    (pd.DataFrame({'col_int': [1, 2, 3], 'col_str': ['A', 'B', 'C']}), None),
 
-def test_irrbb_engine_init_valid_inputs(
-    mock_positions_df, mock_scenarios_config, mock_assumptions_config
-):
-    """
-    Test Case 1: Verify successful initialization with all valid and typical inputs.
-    Checks if the `__init__` method correctly assigns the provided data to instance attributes.
-    """
-    engine = IRRBBEngine(mock_positions_df, mock_scenarios_config, mock_assumptions_config)
+    # Test Case 2: Empty DataFrame
+    (pd.DataFrame(), None),
 
-    assert engine.positions_df.equals(mock_positions_df)
-    assert engine.scenarios_config == mock_scenarios_config
-    assert engine.assumptions_config == mock_assumptions_config
+    # Test Case 3: DataFrame with NaNs and Mixed Data Types
+    (pd.DataFrame({'num_col': [10.0, 20.0, np.nan], 'str_col': ['alpha', None, 'beta'], 'bool_col': [True, False, True]}), None),
 
-def test_irrbb_engine_init_empty_positions_df(
-    mock_empty_positions_df, mock_scenarios_config, mock_assumptions_config
-):
-    """
-    Test Case 2: Edge Case - Verify initialization handles an empty pandas DataFrame for positions_df.
-    The engine should store an empty DataFrame without raising an error, indicating robustness
-    to valid but empty input data. Downstream methods would then handle the emptiness.
-    """
-    engine = IRRBBEngine(mock_empty_positions_df, mock_scenarios_config, mock_assumptions_config)
+    # Test Case 4: Non-DataFrame input (should raise TypeError)
+    ([1, 2, 3], TypeError),
 
-    assert engine.positions_df.empty
-    assert engine.positions_df.equals(mock_empty_positions_df)
-    assert engine.scenarios_config == mock_scenarios_config
-    assert engine.assumptions_config == mock_assumptions_config
-
-@pytest.mark.parametrize("invalid_df_input", [
-    None,               # Test with None
-    "not a dataframe",  # Test with a string
-    123,                # Test with an integer
-    [1, 2, 3],          # Test with a list
-    {"key": "value"}    # Test with a dictionary
+    # Test Case 5: DataFrame with a single row and a single column
+    (pd.DataFrame({'single_value': [42]}), None),
 ])
-def test_irrbb_engine_init_invalid_positions_df_type(
-    invalid_df_input, mock_scenarios_config, mock_assumptions_config
-):
-    """
-    Test Case 3: Edge Case - Verify that TypeError is raised when positions_df is not a pandas DataFrame.
-    This ensures basic input validation for the core data structure.
-    """
-    with pytest.raises(TypeError, match="positions_df must be a pandas DataFrame"):
-        IRRBBEngine(invalid_df_input, mock_scenarios_config, mock_assumptions_config)
+def test_display_dataframe_info(capsys, input, expected):
+    try:
+        # Call the function under test
+        returned_value = display_dataframe_info(input)
 
-@pytest.mark.parametrize("invalid_config_input", [
-    None,               # Test with None
-    "not a dict",       # Test with a string
-    123,                # Test with an integer
-    [],                 # Test with a list
-    pd.DataFrame()      # Test with a DataFrame
-])
-def test_irrbb_engine_init_invalid_scenarios_config_type(
-    mock_positions_df, invalid_config_input, mock_assumptions_config
-):
-    """
-    Test Case 4: Edge Case - Verify that TypeError is raised when scenarios_config is not a dictionary.
-    This validates the type of the configuration input.
-    """
-    with pytest.raises(TypeError, match="scenarios_config must be a dictionary"):
-        IRRBBEngine(mock_positions_df, invalid_config_input, mock_assumptions_config)
+        # Assert the return value for valid DataFrame cases (should always be None)
+        assert returned_value is expected
 
-@pytest.mark.parametrize("invalid_config_input", [
-    None,               # Test with None
-    "not a dict",       # Test with a string
-    123,                # Test with an integer
-    [],                 # Test with a list
-    pd.DataFrame()      # Test with a DataFrame
-])
-def test_irrbb_engine_init_invalid_assumptions_config_type(
-    mock_positions_df, mock_scenarios_config, invalid_config_input
-):
-    """
-    Test Case 5: Edge Case - Verify that TypeError is raised when assumptions_config is not a dictionary.
-    This validates the type of the behavioral assumptions input.
-    """
-    with pytest.raises(TypeError, match="assumptions_config must be a dictionary"):
-        IRRBBEngine(mock_positions_df, mock_scenarios_config, invalid_config_input)
+        # Capture output for valid DataFrame cases
+        captured = capsys.readouterr()
+        output = captured.out
+
+        # Assert that the function printed something to stdout
+        assert output is not None and output != ""
+
+        # Check for expected section headers in the output
+        assert "DataFrame Head:" in output
+        assert "DataFrame Info:" in output
+        assert "DataFrame Description:" in output
+
+        # Specific content checks based on the input DataFrame structure
+        if input.empty:
+            assert "Empty DataFrame" in output
+            assert "0 entries" in output  # From df.info()
+            assert "Index: []" in output # From df.describe() on an empty DF
+        elif 'col_int' in input.columns: # Test Case 1 (Standard DataFrame)
+            assert 'col_int' in output
+            assert 'col_str' in output
+            assert '3 rows' in output
+            assert 'int64' in output
+            assert 'object' in output
+            assert 'mean' in output
+        elif 'num_col' in input.columns: # Test Case 3 (NaNs and Mixed Types)
+            assert 'num_col' in output
+            assert 'str_col' in output
+            assert 'bool_col' in output
+            assert '2 non-null' in output # For num_col from df.info() (because of np.nan)
+            assert 'float64' in output
+            assert 'object' in output
+            assert 'bool' in output
+            assert 'count' in output
+        elif 'single_value' in input.columns: # Test Case 5 (Single row/column)
+            assert 'single_value' in output
+            assert '1 row' in output
+            assert 'count    1.0' in output
+            assert 'mean     42.0' in output
+
+    except Exception as e:
+        # For cases where an exception is expected
+        assert isinstance(e, expected)
+        # Check the error message for TypeError, assuming the function provides a helpful message
+        if expected is TypeError:
+            assert "pandas DataFrame" in str(e)
