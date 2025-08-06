@@ -1,257 +1,144 @@
 import pytest
 import pandas as pd
-import numpy as np
+import os
+import pickle
+from unittest.mock import MagicMock
 
-# definition_82d838e8b45649d0bf8424c61a6826ed block - DO NOT REPLACE or REMOVE
-from definition_82d838e8b45649d0bf8424c61a6826ed import IRRBBEngine
-# </your_module>
+# Keep a placeholder definition_a937abeb957b402ab962b10e418a122a for the import of the module.
+# Keep the `your_module` block as it is. DO NOT REPLACE or REMOVE the block.
+from definition_a937abeb957b402ab962b10e418a122a import calibrate_nmd_beta_model
 
-# Helper function for yield curve interpolation
-def get_yield_for_tenor(yield_curve_series, tenor_str):
-    tenor_td = pd.to_timedelta(tenor_str)
-    
-    if not isinstance(yield_curve_series.index, pd.TimedeltaIndex):
-        yield_curve_series.index = pd.to_timedelta(yield_curve_series.index)
-    
-    if tenor_td in yield_curve_series.index:
-        return yield_curve_series.loc[tenor_td]
-    
-    sorted_index = yield_curve_series.index.sort_values()
-    lower_bound_idx = sorted_index[sorted_index <= tenor_td].max()
-    upper_bound_idx = sorted_index[sorted_index >= tenor_td].min()
-    
-    if pd.isna(lower_bound_idx) and pd.isna(upper_bound_idx):
-        raise ValueError("Yield curve is empty or invalid for interpolation.")
-    elif pd.isna(lower_bound_idx):
-        return yield_curve_series.loc[sorted_index.min()]
-    elif pd.isna(upper_bound_idx):
-        return yield_curve_series.loc[sorted_index.max()]
-    
-    y0, y1 = yield_curve_series.loc[lower_bound_idx], yield_curve_series.loc[upper_bound_idx]
-    x0, x1 = lower_bound_idx.total_seconds(), upper_bound_idx.total_seconds()
-    x = tenor_td.total_seconds()
-    
-    if x0 == x1:
-        return y0
-        
-    return y0 + (y1 - y0) * (x - x0) / (x1 - x0)
+# Helper to create dummy data for mocking
+def create_dummy_nmd_data():
+    """Returns a pandas DataFrame with suitable data for NMD beta calibration."""
+    return pd.DataFrame({
+        'policy_rate': [0.01, 0.015, 0.02, 0.025, 0.03],
+        'deposit_rate': [0.005, 0.007, 0.009, 0.011, 0.013],
+        'timestamp': pd.to_datetime(['2023-01-01', '2023-02-01', '2023-03-01', '2023-04-01', '2023-05-01'])
+    })
 
-# Mock class to simulate `self` for the `adjust_behavioral_cashflows` method
-class MockIRRBBEngineForTest:
-    def __init__(self, baseline_yield_curve, assumptions_config):
-        self.baseline_yield_curve = baseline_yield_curve
-        self.assumptions_config = assumptions_config
-
+# Fixture to provide basic mocks for pandas I/O and pickle dumping
 @pytest.fixture
-def sample_cashflows_df():
-    dates = pd.date_range(start='2023-01-31', periods=12, freq='M')
+def mock_io(mocker):
+    """Mocks pandas.read_pickle and pickle.dump."""
+    mocker.patch('pandas.read_pickle', return_value=create_dummy_nmd_data())
+    mocker.patch('pickle.dump') # For saving the model
+
+def test_successful_calibration(tmp_path, mock_io):
+    """
+    Test case 1: Ensures the function processes valid input data and attempts to save the model.
+    This test verifies the 'happy path' by checking mock calls.
+    """
+    cleaned_data_path = tmp_path / "mock_cleaned_data.pkl"
+    model_output_path = tmp_path / "mock_nmd_beta_model.pkl"
+
+    # Call the function (the stub, whose expected behavior is simulated by mocks)
+    calibrate_nmd_beta_model(str(cleaned_data_path), str(model_output_path))
+
+    # Assert that data was attempted to be read
+    pd.read_pickle.assert_called_once_with(str(cleaned_data_path))
+
+    # Assert that the model was attempted to be saved
+    pickle.dump.assert_called_once()
+    # Verify the second argument of pickle.dump (the file handle's name attribute)
+    # The first argument is the model object, which is a mock here.
+    assert pickle.dump.call_args[0][1].name == str(model_output_path)
+
+
+def test_cleaned_data_path_non_existent(mocker):
+    """
+    Test case 2: Verifies that a FileNotFoundError is handled if cleaned_data_path does not exist.
+    Mocks pandas.read_pickle to simulate this file system error.
+    """
+    non_existent_path = "/non_existent_dir/non_existent_file.pkl"
+    model_output_path = "/tmp/some_model.pkl"
+
+    # Mock pandas.read_pickle to raise FileNotFoundError when called
+    mocker.patch('pandas.read_pickle', side_effect=FileNotFoundError(f"No such file or directory: '{non_existent_path}'"))
+
+    with pytest.raises(FileNotFoundError) as excinfo:
+        calibrate_nmd_beta_model(non_existent_path, model_output_path)
+
+    assert f"No such file or directory: '{non_existent_path}'" in str(excinfo.value)
+    pd.read_pickle.assert_called_once_with(non_existent_path)
+
+
+def test_invalid_cleaned_data_format_for_calibration(mocker):
+    """
+    Test case 3: Checks for expected errors (KeyError/ValueError) if the cleaned data
+    lacks necessary columns for NMD beta model calibration (e.g., 'policy_rate').
+    Mocks pandas.read_pickle to return a malformed DataFrame and then simulates internal logic failure.
+    """
+    cleaned_data_path = "/path/to/malformed_data.pkl"
+    model_output_path = "/tmp/some_model.pkl"
+
+    # Create a mock DataFrame object whose __getitem__ method simulates a KeyError
+    # when trying to access 'policy_rate' or 'deposit_rate'
+    mock_df_instance = MagicMock()
+    # Using a side_effect function to raise KeyError only for specific keys
+    mock_df_instance.__getitem__.side_effect = lambda key: KeyError(f"Column '{key}' not found.") \
+        if key in ['policy_rate', 'deposit_rate'] else MagicMock() # Return a generic mock for other accesses
     
-    mortgage_cfs = pd.DataFrame({
-        'instrument_id': ['MORTGAGE_001'] * 12,
-        'instrument_type': ['Mortgage'] * 12,
-        'cashflow_date': dates,
-        'principal_cashflow': [1000.0] * 12,
-        'interest_cashflow': [50.0] * 12,
-        'is_behavioral_mortgage': [True] * 12,
-        'is_behavioral_NMD': [False] * 12,
-        'current_balance': np.linspace(90000, 80000, 12)
-    })
+    mocker.patch('pandas.read_pickle', return_value=mock_df_instance)
+    # Also mock pickle.dump so that if the function proceeds, it doesn't fail on saving
+    mocker.patch('pickle.dump')
+
+    with pytest.raises(KeyError) as excinfo: # Or ValueError, depending on implementation detail
+        calibrate_nmd_beta_model(cleaned_data_path, model_output_path)
+
+    # The specific message depends on which column is accessed first.
+    assert "Column 'policy_rate' not found." in str(excinfo.value) or \
+           "Column 'deposit_rate' not found." in str(excinfo.value)
+    pd.read_pickle.assert_called_once_with(cleaned_data_path)
+
+
+def test_model_output_path_permission_denied(tmp_path, mock_io, mocker):
+    """
+    Test case 4: Verifies that a PermissionError is raised if the function cannot write
+    to the specified model_output_path due to permissions.
+    Mocks pickle.dump to simulate this file system error.
+    """
+    cleaned_data_path = tmp_path / "mock_cleaned_data.pkl"
+    # A generic path that would typically cause permission issues if not mocked
+    restricted_output_path = "/dev/null/restricted_output.pkl" 
+
+    # Mock pickle.dump to raise PermissionError when called
+    mocker.patch('pickle.dump', side_effect=PermissionError(f"Permission denied: '{restricted_output_path}'"))
+
+    with pytest.raises(PermissionError) as excinfo:
+        calibrate_nmd_beta_model(str(cleaned_data_path), restricted_output_path)
+
+    assert f"Permission denied: '{restricted_output_path}'" in str(excinfo.value)
+    pd.read_pickle.assert_called_once_with(str(cleaned_data_path))
+    pickle.dump.assert_called_once() # Should be called once before raising the error
+
+
+@pytest.mark.parametrize("cleaned_data_arg, model_output_arg", [
+    (123, "output.pkl"),          # cleaned_data_path is not string
+    ("input.pkl", None),          # model_output_path is not string
+    (None, "output.pkl"),         # cleaned_data_path is None
+    (123, 456),                   # Both are not strings
+])
+def test_invalid_path_types(cleaned_data_arg, model_output_arg, mocker):
+    """
+    Test case 5: Ensures TypeError is raised when path arguments are not strings.
+    This relies on underlying library calls (like pandas.read_pickle or built-in open)
+    to raise a TypeError if a non-string path is passed.
+    """
+    # Mock core I/O functions that would be called by pandas or pickle,
+    # and would naturally raise TypeError for non-string paths.
+    # We do NOT mock calibrate_nmd_beta_model itself.
+    mocker.patch('pandas.read_pickle', side_effect=TypeError("Expected str, bytes or os.PathLike object, not int"))
+    mocker.patch('pickle.dump', side_effect=TypeError("Expected str, bytes or os.PathLike object, not NoneType"))
+
+    with pytest.raises(TypeError) as excinfo:
+        calibrate_nmd_beta_model(cleaned_data_arg, model_output_arg)
     
-    nmd_cfs = pd.DataFrame({
-        'instrument_id': ['NMD_001'] * 12,
-        'instrument_type': ['NMD'] * 12,
-        'cashflow_date': dates,
-        'principal_cashflow': [500.0] * 12,
-        'interest_cashflow': [10.0] * 12,
-        'is_behavioral_mortgage': [False] * 12,
-        'is_behavioral_NMD': [True] * 12,
-        'current_balance': np.linspace(45000, 40000, 12)
-    })
-
-    other_cfs = pd.DataFrame({
-        'instrument_id': ['FIXED_BOND_001', 'FLOATING_LOAN_001'],
-        'instrument_type': ['Fixed Bond', 'Floating Loan'],
-        'cashflow_date': [pd.Timestamp('2023-01-31'), pd.Timestamp('2023-01-31')],
-        'principal_cashflow': [2000.0, 1500.0],
-        'interest_cashflow': [70.0, 60.0],
-        'is_behavioral_mortgage': [False, False],
-        'is_behavioral_NMD': [False, False],
-        'current_balance': [0.0, 0.0]
-    })
-    
-    return pd.concat([mortgage_cfs, nmd_cfs, other_cfs], ignore_index=True)
-
-@pytest.fixture
-def baseline_yield_curve_fixture():
-    baseline_yc_data = {
-        '1M': 0.01, '3M': 0.011, '6M': 0.012, '1Y': 0.015,
-        '2Y': 0.018, '3Y': 0.02, '5Y': 0.022, '7Y': 0.024,
-        '10Y': 0.025, '15Y': 0.026, '20Y': 0.027, '30Y': 0.028
-    }
-    return pd.Series(baseline_yc_data, name='yield', index=list(baseline_yc_data.keys()))
-
-@pytest.fixture
-def irrbb_engine_instance(baseline_yield_curve_fixture):
-    assumptions = {
-        'behavioral_rates': {
-            'mortgage_prepayment': {
-                'baseline_annual_rate': 0.05,
-                'shock_sensitivity': {
-                    'fall': 0.02,
-                    'rise': -0.01
-                }
-            },
-            'NMD_beta': 0.5,
-            'NMD_principal_sensitivity': {
-                'fall_threshold_bp': -50,
-                'rise_threshold_bp': 50,
-                'principal_adjustment_factor': 0.001
-            }
-        }
-    }
-    return MockIRRBBEngineForTest(baseline_yield_curve_fixture, assumptions)
-
-def test_adjust_behavioral_cashflows_rates_fall(sample_cashflows_df, baseline_yield_curve_fixture, irrbb_engine_instance):
-    scenario_down_yc_data = {k: v - 0.01 for k, v in baseline_yield_curve_fixture.items()}
-    scenario_down_yield_curve = pd.Series(scenario_down_yc_data, name='yield', index=list(scenario_down_yc_data.keys()))
-
-    adjusted_df = IRRBBEngine.adjust_behavioral_cashflows(irrbb_engine_instance, sample_cashflows_df.copy(), scenario_down_yield_curve)
-
-    mortgage_cfs_adj = adjusted_df[adjusted_df['instrument_type'] == 'Mortgage']
-    mortgage_cfs_orig = sample_cashflows_df[sample_cashflows_df['instrument_type'] == 'Mortgage']
-    
-    mortgage_baseline_rate = irrbb_engine_instance.assumptions_config['behavioral_rates']['mortgage_prepayment']['baseline_annual_rate']
-    mortgage_fall_sensitivity = irrbb_engine_instance.assumptions_config['behavioral_rates']['mortgage_prepayment']['shock_sensitivity']['fall']
-    effective_mortgage_rate = mortgage_baseline_rate + mortgage_fall_sensitivity
-    
-    for idx, row in mortgage_cfs_orig.iterrows():
-        adjusted_principal = mortgage_cfs_adj[mortgage_cfs_adj['cashflow_date'] == row['cashflow_date']]['principal_cashflow'].iloc[0]
-        expected_added_prepayment_monthly = (row['current_balance'] * effective_mortgage_rate) / 12
-        expected_total_principal = row['principal_cashflow'] + expected_added_prepayment_monthly
-        
-        np.testing.assert_allclose(adjusted_principal, expected_total_principal, rtol=1e-5)
-        assert adjusted_principal > row['principal_cashflow']
-
-    nmd_cfs_adj = adjusted_df[adjusted_df['instrument_type'] == 'NMD']
-    nmd_cfs_orig = sample_cashflows_df[sample_cashflows_df['instrument_type'] == 'NMD']
-    
-    nmd_principal_adj_factor = irrbb_engine_instance.assumptions_config['behavioral_rates']['NMD_principal_sensitivity']['principal_adjustment_factor']
-    nmd_fall_threshold = irrbb_engine_instance.assumptions_config['behavioral_rates']['NMD_principal_sensitivity']['fall_threshold_bp'] / 10000
-    
-    baseline_1m_rate = get_yield_for_tenor(baseline_yield_curve_fixture, '1M')
-    scenario_1m_rate = get_yield_for_tenor(scenario_down_yield_curve, '1M')
-    rate_change_1m = scenario_1m_rate - baseline_1m_rate
-
-    for idx, row in nmd_cfs_orig.iterrows():
-        adjusted_interest = nmd_cfs_adj[nmd_cfs_adj['cashflow_date'] == row['cashflow_date']]['interest_cashflow'].iloc[0]
-        adjusted_principal = nmd_cfs_adj[nmd_cfs_adj['cashflow_date'] == row['cashflow_date']]['principal_cashflow'].iloc[0]
-        
-        assert adjusted_interest < row['interest_cashflow']
-        
-        expected_principal_adjustment = 0
-        if rate_change_1m < nmd_fall_threshold:
-             expected_principal_adjustment = row['current_balance'] * nmd_principal_adj_factor
-        
-        expected_total_principal = row['principal_cashflow'] + expected_principal_adjustment
-        np.testing.assert_allclose(adjusted_principal, expected_total_principal, rtol=1e-5)
-        assert adjusted_principal > row['principal_cashflow']
-
-def test_adjust_behavioral_cashflows_rates_rise(sample_cashflows_df, baseline_yield_curve_fixture, irrbb_engine_instance):
-    scenario_up_yc_data = {k: v + 0.01 for k, v in baseline_yield_curve_fixture.items()}
-    scenario_up_yield_curve = pd.Series(scenario_up_yc_data, name='yield', index=list(scenario_up_yc_data.keys()))
-
-    adjusted_df = IRRBBEngine.adjust_behavioral_cashflows(irrbb_engine_instance, sample_cashflows_df.copy(), scenario_up_yield_curve)
-
-    mortgage_cfs_adj = adjusted_df[adjusted_df['instrument_type'] == 'Mortgage']
-    mortgage_cfs_orig = sample_cashflows_df[sample_cashflows_df['instrument_type'] == 'Mortgage']
-    
-    mortgage_baseline_rate = irrbb_engine_instance.assumptions_config['behavioral_rates']['mortgage_prepayment']['baseline_annual_rate']
-    mortgage_rise_sensitivity = irrbb_engine_instance.assumptions_config['behavioral_rates']['mortgage_prepayment']['shock_sensitivity']['rise']
-    effective_mortgage_rate = mortgage_baseline_rate + mortgage_rise_sensitivity
-    
-    for idx, row in mortgage_cfs_orig.iterrows():
-        adjusted_principal = mortgage_cfs_adj[mortgage_cfs_adj['cashflow_date'] == row['cashflow_date']]['principal_cashflow'].iloc[0]
-        expected_added_prepayment_monthly = (row['current_balance'] * effective_mortgage_rate) / 12
-        expected_total_principal = row['principal_cashflow'] + expected_added_prepayment_monthly
-        
-        np.testing.assert_allclose(adjusted_principal, expected_total_principal, rtol=1e-5)
-        assert adjusted_principal < row['principal_cashflow']
-
-    nmd_cfs_adj = adjusted_df[adjusted_df['instrument_type'] == 'NMD']
-    nmd_cfs_orig = sample_cashflows_df[sample_cashflows_df['instrument_type'] == 'NMD']
-    
-    nmd_principal_adj_factor = irrbb_engine_instance.assumptions_config['behavioral_rates']['NMD_principal_sensitivity']['principal_adjustment_factor']
-    nmd_rise_threshold = irrbb_engine_instance.assumptions_config['behavioral_rates']['NMD_principal_sensitivity']['rise_threshold_bp'] / 10000
-    
-    baseline_1m_rate = get_yield_for_tenor(baseline_yield_curve_fixture, '1M')
-    scenario_1m_rate = get_yield_for_tenor(scenario_up_yield_curve, '1M')
-    rate_change_1m = scenario_1m_rate - baseline_1m_rate
-
-    for idx, row in nmd_cfs_orig.iterrows():
-        adjusted_interest = nmd_cfs_adj[nmd_cfs_adj['cashflow_date'] == row['cashflow_date']]['interest_cashflow'].iloc[0]
-        adjusted_principal = nmd_cfs_adj[nmd_cfs_adj['cashflow_date'] == row['cashflow_date']]['principal_cashflow'].iloc[0]
-
-        assert adjusted_interest > row['interest_cashflow']
-        
-        expected_principal_adjustment = 0
-        if rate_change_1m > nmd_rise_threshold:
-             expected_principal_adjustment = -row['current_balance'] * nmd_principal_adj_factor
-        
-        expected_total_principal = row['principal_cashflow'] + expected_principal_adjustment
-        np.testing.assert_allclose(adjusted_principal, expected_total_principal, rtol=1e-5)
-        assert adjusted_principal < row['principal_cashflow']
-
-def test_adjust_behavioral_cashflows_no_behavioral_instruments(baseline_yield_curve_fixture, irrbb_engine_instance):
-    non_behavioral_df = pd.DataFrame({
-        'instrument_id': ['FIXED_BOND_001', 'FLOATING_LOAN_001'],
-        'instrument_type': ['Fixed Bond', 'Floating Loan'],
-        'cashflow_date': [pd.Timestamp('2023-01-31'), pd.Timestamp('2023-01-31')],
-        'principal_cashflow': [2000.0, 1500.0],
-        'interest_cashflow': [70.0, 60.0],
-        'is_behavioral_mortgage': [False, False],
-        'is_behavioral_NMD': [False, False],
-        'current_balance': [0.0, 0.0]
-    })
-    
-    scenario_yield_curve = pd.Series({'1M': 0.005, '10Y': 0.015}, index=['1M', '10Y'])
-
-    adjusted_df = IRRBBEngine.adjust_behavioral_cashflows(irrbb_engine_instance, non_behavioral_df.copy(), scenario_yield_curve)
-    
-    pd.testing.assert_frame_equal(adjusted_df, non_behavioral_df)
-
-def test_adjust_behavioral_cashflows_empty_df(baseline_yield_curve_fixture, irrbb_engine_instance):
-    empty_df = pd.DataFrame(columns=[
-        'instrument_id', 'instrument_type', 'cashflow_date', 
-        'principal_cashflow', 'interest_cashflow', 
-        'is_behavioral_mortgage', 'is_behavioral_NMD', 'current_balance'
+    # Assert that the error message indicates a type mismatch for a path-like object.
+    # The exact message can vary by Python/library version.
+    assert any(msg in str(excinfo.value) for msg in [
+        "Expected str, bytes or os.PathLike object",
+        "Path-like object expected",
+        "must be a string or PathLike object",
+        "not a string, bytes or os.PathLike object"
     ])
-    
-    scenario_yield_curve = pd.Series({'1M': 0.005, '10Y': 0.015}, index=['1M', '10Y'])
-
-    adjusted_df = IRRBBEngine.adjust_behavioral_cashflows(irrbb_engine_instance, empty_df.copy(), scenario_yield_curve)
-    
-    pd.testing.assert_frame_equal(adjusted_df, empty_df)
-
-def test_adjust_behavioral_cashflows_unchanged_yield_curve(sample_cashflows_df, baseline_yield_curve_fixture, irrbb_engine_instance):
-    unchanged_yield_curve = baseline_yield_curve_fixture.copy()
-
-    adjusted_df = IRRBBEngine.adjust_behavioral_cashflows(irrbb_engine_instance, sample_cashflows_df.copy(), unchanged_yield_curve)
-
-    mortgage_cfs_adj = adjusted_df[adjusted_df['instrument_type'] == 'Mortgage']
-    mortgage_cfs_orig = sample_cashflows_df[sample_cashflows_df['instrument_type'] == 'Mortgage']
-    
-    mortgage_baseline_rate = irrbb_engine_instance.assumptions_config['behavioral_rates']['mortgage_prepayment']['baseline_annual_rate']
-    
-    for idx, row in mortgage_cfs_orig.iterrows():
-        adjusted_principal = mortgage_cfs_adj[mortgage_cfs_adj['cashflow_date'] == row['cashflow_date']]['principal_cashflow'].iloc[0]
-        expected_added_prepayment_monthly = (row['current_balance'] * mortgage_baseline_rate) / 12
-        expected_total_principal = row['principal_cashflow'] + expected_added_prepayment_monthly
-        
-        np.testing.assert_allclose(adjusted_principal, expected_total_principal, rtol=1e-5)
-        assert adjusted_principal > row['principal_cashflow']
-
-    nmd_cfs_adj = adjusted_df[adjusted_df['instrument_type'] == 'NMD']
-    nmd_cfs_orig = sample_cashflows_df[sample_cashflows_df['instrument_type'] == 'NMD']
-
-    pd.testing.assert_series_equal(nmd_cfs_adj['interest_cashflow'].reset_index(drop=True), nmd_cfs_orig['interest_cashflow'].reset_index(drop=True), check_dtype=False)
-    pd.testing.assert_series_equal(nmd_cfs_adj['principal_cashflow'].reset_index(drop=True), nmd_cfs_orig['principal_cashflow'].reset_index(drop=True), check_dtype=False)
