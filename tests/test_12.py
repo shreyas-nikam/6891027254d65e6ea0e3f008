@@ -1,165 +1,112 @@
 import pytest
-import pandas as pd
-import matplotlib.pyplot as plt
-import numpy as np
+from unittest.mock import patch, MagicMock
+from pathlib import Path
 
 # Placeholder for your module import
-from definition_35947f1dbed547a9a97da2922d65ed50 import plot_gap_profile
+# DO NOT REPLACE or REMOVE THE BLOCK
+from definition_7dd1f308a5be45f0940db67c6687848a import calculate_irrbb_valuation
+# END OF BLOCK
 
-# Define the expected Basel bucket order as mentioned in the specification
-BASEL_BUCKET_ORDER = ['0-1M', '1-3M', '3-6M', '6-12M', '1-2Y', '2-3Y', '3-5Y', '5-10Y', '>10Y']
+# Mock YieldCurve object, assuming it's a simple class with no complex methods for this test scope
+class MockYieldCurve:
+    def __init__(self, name="GenericYieldCurve"):
+        self.name = name
+    def __repr__(self):
+        return f"<{self.name}>"
 
-@pytest.fixture(autouse=True)
-def mock_matplotlib(mocker):
-    """
-    Fixture to mock matplotlib.pyplot functions to prevent actual plot rendering
-    and allow checking if plotting functions were called correctly.
-    """
-    mocker.patch('matplotlib.pyplot.show') 
-    mocker.patch('matplotlib.pyplot.figure')
-    mocker.patch('matplotlib.pyplot.bar')
-    mocker.patch('matplotlib.pyplot.xlabel')
-    mocker.patch('matplotlib.pyplot.ylabel')
-    mocker.patch('matplotlib.pyplot.title')
-    mocker.patch('matplotlib.pyplot.xticks')
-    mocker.patch('matplotlib.pyplot.tight_layout')
-    mocker.patch('matplotlib.pyplot.close') 
+# Base arguments for the function, using Path objects for consistency with mocking
+# Paths will be converted to strings right before calling the function, as specified in the signature
+base_args_template = {
+    "cleaned_positions_path": Path("dummy_cleaned.pkl"),
+    "cashflows_path": Path("dummy_cashflows.parquet"),
+    "baseline_yield_curve": MockYieldCurve("Baseline"),
+    "scenario_yield_curves": {
+        "parallel_up": MockYieldCurve("Scenario_ParallelUp"),
+        "parallel_down": MockYieldCurve("Scenario_ParallelDown"),
+    },
+    "mortgage_model_path": Path("dummy_mortgage_model.pkl"),
+    "nmd_model_path": Path("dummy_nmd_model.pkl"),
+    "eve_baseline_output_path": Path("dummy_eve_baseline.pkl"),
+    "eve_scenarios_output_path": Path("dummy_eve_scenarios.pkl"),
+    "nii_results_output_path": Path("dummy_nii_results.pkl"),
+}
 
-# Test Case 1: Successful plot generation with typical data and mixed cash flows
-def test_plot_gap_profile_typical_data(mocker):
-    """
-    Tests if the function correctly processes a typical DataFrame with mixed
-    inflows and outflows across various time buckets and calls matplotlib
-    functions as expected.
-    """
-    cashflows_df = pd.DataFrame({
-        'time_bucket': ['0-1M', '0-1M', '1-3M', '1-3M', '3-6M', '1-2Y', '3-5Y', '0-1M', '>10Y'],
-        'amount': [100, -50, 200, -150, 300, 50, -20, 25, 1000] # Assuming 'amount' is already signed
-    })
-    
-    plot_gap_profile(cashflows_df)
+@pytest.mark.parametrize(
+    "test_id, args_modifier, mock_path_exists_side_effect, expected_output",
+    [
+        # Test Case 1: Successful execution - all inputs valid, files exist, outputs are written
+        (
+            "success_valid_inputs",
+            lambda args: args,  # No modification
+            lambda p: True,  # All mocked paths exist
+            None,  # Expected return value for success
+        ),
+        # Test Case 2: Input `cleaned_positions_path` file not found
+        (
+            "fail_cleaned_positions_path_not_found",
+            lambda args: args,
+            lambda p: p != base_args_template["cleaned_positions_path"],  # cleaned_positions_path does not exist
+            FileNotFoundError,
+        ),
+        # Test Case 3: Invalid `baseline_yield_curve` type
+        (
+            "fail_invalid_baseline_yield_curve_type",
+            lambda args: {**args, "baseline_yield_curve": "not_a_yield_curve_object"},
+            lambda p: True,  # All mocked paths exist
+            TypeError,
+        ),
+        # Test Case 4: Empty `scenario_yield_curves` dictionary
+        (
+            "fail_empty_scenario_yield_curves",
+            lambda args: {**args, "scenario_yield_curves": {}},
+            lambda p: True,  # All mocked paths exist
+            ValueError,
+        ),
+        # Test Case 5: `mortgage_model_path` file not found
+        (
+            "fail_mortgage_model_path_not_found",
+            lambda args: args,
+            lambda p: p != base_args_template["mortgage_model_path"],  # mortgage_model_path does not exist
+            FileNotFoundError,
+        ),
+    ]
+)
+@patch('pathlib.Path.exists') # Mock Path.exists to control file existence
+@patch('builtins.open')      # Mock open to simulate file writing
+def test_calculate_irrbb_valuation(
+    mock_open, mock_path_exists, test_id, args_modifier, mock_path_exists_side_effect, expected_output
+):
+    # Configure the side effect for `pathlib.Path.exists` for the current test case
+    mock_path_exists.side_effect = mock_path_exists_side_effect
 
-    # Assert that matplotlib functions were called as expected for plot generation
-    plt.figure.assert_called_once()
-    plt.bar.assert_called_once()
-    plt.xlabel.assert_called_once_with('Time Buckets')
-    plt.ylabel.assert_called_once_with('Net Gap (Inflows - Outflows)')
-    plt.title.assert_called_once_with('Net Gap Profile by Time Bucket')
-    plt.xticks.assert_called_once()
-    plt.tight_layout.assert_called_once()
-    plt.close.assert_called_once()
+    # Create a deep copy of base arguments to avoid side effects across test runs
+    current_args = args_modifier(base_args_template.copy())
 
-    # Verify the data passed to plt.bar
-    args, _ = plt.bar.call_args
-    plotted_buckets = list(args[0])
-    plotted_gaps = list(args[1])
+    # Convert Path objects to strings as the function signature expects strings
+    func_args = {k: str(v) if isinstance(v, Path) else v for k, v in current_args.items()}
 
-    # Calculate expected net gaps and sort according to BASEL_BUCKET_ORDER
-    expected_grouped_data = cashflows_df.groupby('time_bucket')['amount'].sum()
-    expected_buckets_sorted = [b for b in BASEL_BUCKET_ORDER if b in expected_grouped_data.index]
-    expected_net_gaps_sorted = expected_grouped_data.reindex(expected_buckets_sorted).tolist()
-    
-    assert plotted_buckets == expected_buckets_sorted
-    assert np.allclose(plotted_gaps, expected_net_gaps_sorted)
+    try:
+        # Call the function under test
+        result = calculate_irrbb_valuation(**func_args)
 
-# Test Case 2: Empty DataFrame input
-def test_plot_gap_profile_empty_dataframe(mocker):
-    """
-    Tests if the function handles an empty DataFrame gracefully without errors.
-    It should still attempt to set up the plot but plot no bars.
-    """
-    cashflows_df = pd.DataFrame(columns=['time_bucket', 'amount']) 
+        # Assert for successful execution (result is None, and mocks were called)
+        assert result is expected_output
+        if expected_output is None:
+            # For a successful run, verify that attempts were made to open output files for writing
+            # (assuming internal implementation would call open for these)
+            assert mock_open.called
 
-    plot_gap_profile(cashflows_df)
+    except Exception as e:
+        # Assert that an exception was raised and its type matches the expected_output
+        assert isinstance(e, expected_output)
 
-    # A figure should still be created, and labels set
-    plt.figure.assert_called_once()
-    plt.xlabel.assert_called_once_with('Time Buckets')
-    plt.ylabel.assert_called_once_with('Net Gap (Inflows - Outflows)')
-    plt.title.assert_called_once_with('Net Gap Profile by Time Bucket')
-    
-    # Check if plt.bar was called with empty data (or not at all depending on implementation).
-    # Most robust check is that it doesn't crash and closes the figure.
-    if plt.bar.called:
-        args, _ = plt.bar.call_args
-        assert len(args[0]) == 0 and len(args[1]) == 0
-    
-    plt.tight_layout.assert_called_once()
-    plt.close.assert_called_once()
-
-# Test Case 3: DataFrame with missing required columns
-def test_plot_gap_profile_missing_columns():
-    """
-    Tests if the function raises an appropriate error (KeyError) when critical
-    columns like 'time_bucket' or 'amount' are missing.
-    """
-    # Missing 'amount' column
-    cashflows_df_missing_amount = pd.DataFrame({
-        'time_bucket': ['0-1M', '1-3M']
-    })
-    with pytest.raises(KeyError, match="amount"):
-        plot_gap_profile(cashflows_df_missing_amount)
-
-    # Missing 'time_bucket' column
-    cashflows_df_missing_bucket = pd.DataFrame({
-        'amount': [100, -50]
-    })
-    with pytest.raises(KeyError, match="time_bucket"):
-        plot_gap_profile(cashflows_df_missing_bucket)
-
-# Test Case 4: DataFrame with non-numeric data in amount column
-def test_plot_gap_profile_non_numeric_amount():
-    """
-    Tests if the function correctly handles non-numeric data in the 'amount' column,
-    expecting a TypeError or ValueError during aggregation.
-    """
-    cashflows_df = pd.DataFrame({
-        'time_bucket': ['0-1M', '1-3M'],
-        'amount': [100, 'invalid_value'] # Non-numeric data
-    })
-    
-    # Pandas sum/aggregation on mixed types typically raises TypeError or ValueError
-    with pytest.raises((TypeError, ValueError)): 
-        plot_gap_profile(cashflows_df)
-
-# Test Case 5: DataFrame with only positive or only negative cash flows (unidirectional gap)
-def test_plot_gap_profile_unidirectional_cashflows(mocker):
-    """
-    Tests if the function correctly plots when all net gaps are either positive (inflows)
-    or negative (outflows), ensuring the plotting logic handles single-sided data.
-    """
-    # Only positive amounts (net positive gap for all buckets)
-    cashflows_df_inflows = pd.DataFrame({
-        'time_bucket': ['0-1M', '1-3M', '3-6M'],
-        'amount': [100, 200, 300]
-    })
-
-    plot_gap_profile(cashflows_df_inflows)
-    plt.bar.assert_called_once()
-    args_in, _ = plt.bar.call_args
-    expected_grouped_data_in = cashflows_df_inflows.groupby('time_bucket')['amount'].sum()
-    expected_buckets_in_sorted = [b for b in BASEL_BUCKET_ORDER if b in expected_grouped_data_in.index]
-    expected_net_gaps_in_sorted = expected_grouped_data_in.reindex(expected_buckets_in_sorted).tolist()
-    assert list(args_in[0]) == expected_buckets_in_sorted
-    assert np.allclose(list(args_in[1]), expected_net_gaps_in_sorted)
-    plt.close.assert_called_once()
-    
-    # Reset mocks to check the next call independently
-    mocker.resetall() 
-    mock_matplotlib(mocker) # Reapply the mock setup
-
-    # Only negative amounts (net negative gap for all buckets)
-    cashflows_df_outflows = pd.DataFrame({
-        'time_bucket': ['0-1M', '1-3M', '3-6M'],
-        'amount': [-100, -200, -300]
-    })
-
-    plot_gap_profile(cashflows_df_outflows)
-    plt.bar.assert_called_once()
-    args_out, _ = plt.bar.call_args
-    expected_grouped_data_out = cashflows_df_outflows.groupby('time_bucket')['amount'].sum()
-    expected_buckets_out_sorted = [b for b in BASEL_BUCKET_ORDER if b in expected_grouped_data_out.index]
-    expected_net_gaps_out_sorted = expected_grouped_data_out.reindex(expected_buckets_out_sorted).tolist()
-    assert list(args_out[0]) == expected_buckets_out_sorted
-    assert np.allclose(list(args_out[1]), expected_net_gaps_out_sorted)
-    plt.close.assert_called_once()
+        # Further assertions on error messages for clarity and robustness (assuming standard error messages)
+        if expected_output == FileNotFoundError:
+            if "cleaned_positions" in test_id:
+                assert f"File not found: {func_args['cleaned_positions_path']}" in str(e)
+            elif "mortgage_model" in test_id:
+                assert f"File not found: {func_args['mortgage_model_path']}" in str(e)
+        elif expected_output == TypeError:
+            assert "baseline_yield_curve must be a yield curve object" in str(e)
+        elif expected_output == ValueError:
+            assert "At least one scenario yield curve must be provided" in str(e)
