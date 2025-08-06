@@ -1,55 +1,65 @@
 import pytest
 import pandas as pd
-from definition_1b02ae0d54544635b960723651e0316f import generate_yield_curve # This assumes generate_yield_curve is directly importable, e.g., a static method or a top-level function.
+import matplotlib.pyplot as plt
+import seaborn as sns
+from unittest.mock import MagicMock
 
-# Define sample base curves for testing
-base_curve_simple = pd.Series([0.01, 0.015, 0.02], index=[1, 5, 10], name='Rates') # Example: rates for 1Y, 5Y, 10Y tenors
-base_curve_other = pd.Series([0.03, 0.035, 0.04], index=[0.5, 2, 7], name='Rates') # Example: rates for 0.5Y, 2Y, 7Y tenors
+# Keep a placeholder definition_b3d77306ce73486e834c030d29921175 for the import of the module.
+# Keep the `your_module` block as it is. DO NOT REPLACE or REMOVE the block.
+from definition_b3d77306ce73486e834c030d29921175 import plot_balance_sheet_composition
 
-@pytest.mark.parametrize(
-    "base_curve, shock_type, shock_magnitude, expected_output_or_exception",
-    [
-        # Test Case 1: Parallel Up Shock (Expected functionality)
-        # Applies a positive uniform shift to all rates in the base curve.
-        (base_curve_simple, 'Parallel Up', 0.005, pd.Series([0.015, 0.020, 0.025], index=[1, 5, 10], name='Rates')),
+# Mock matplotlib and seaborn to prevent actual plots from showing up and speed up tests
+@pytest.fixture(autouse=True)
+def no_plotting_output(monkeypatch):
+    """Fixture to prevent actual plot display and mock plotting calls."""
+    monkeypatch.setattr(plt, 'show', lambda: None)
+    monkeypatch.setattr(sns, 'barplot', MagicMock())
+    monkeypatch.setattr(plt, 'figure', MagicMock())
+    monkeypatch.setattr(plt, 'title', MagicMock())
+    monkeypatch.setattr(plt, 'xlabel', MagicMock())
+    monkeypatch.setattr(plt, 'ylabel', MagicMock())
+    monkeypatch.setattr(plt, 'xticks', MagicMock())
+    monkeypatch.setattr(plt, 'legend', MagicMock())
+    monkeypatch.setattr(plt, 'tight_layout', MagicMock())
+    monkeypatch.setattr(plt, 'clf', MagicMock()) # Clear figure for clean state
 
-        # Test Case 2: Parallel Down Shock (Expected functionality)
-        # Applies a negative uniform shift to all rates in the base curve.
-        (base_curve_other, 'Parallel Down', 0.002, pd.Series([0.028, 0.033, 0.038], index=[0.5, 2, 7], name='Rates')),
-
-        # Test Case 3: Zero Shock Magnitude (Edge Case)
-        # If the shock magnitude is zero, the output curve should be identical to the input base curve.
-        (base_curve_simple, 'Parallel Up', 0.0, base_curve_simple),
-
-        # Test Case 4: Invalid Shock Type (Edge Case)
-        # The function should raise a ValueError for an unrecognized shock type string.
-        (base_curve_simple, 'Invalid Shock Type', 0.001, ValueError),
-
-        # Test Case 5: Non-numeric Shock Magnitude (Edge Case)
-        # Passing a non-float value for shock_magnitude should result in a TypeError.
-        (base_curve_simple, 'Parallel Up', '0.001', TypeError), 
-    ]
-)
-def test_generate_yield_curve(base_curve, shock_type, shock_magnitude, expected_output_or_exception):
-    try:
-        # Call the generate_yield_curve function.
-        # Assuming `self` argument is either ignored for testing, or it's a static method,
-        # or it's implicitly mocked by the test setup given the direct import instruction.
-        # We pass None for 'self' as a placeholder.
-        result = generate_yield_curve(None, base_curve, shock_type, shock_magnitude)
-
-        # If an exception was expected, but no exception was raised, fail the test.
-        if isinstance(expected_output_or_exception, type) and issubclass(expected_output_or_exception, Exception):
-            pytest.fail(f"Expected {expected_output_or_exception.__name__} but no exception was raised. Got: {result}")
-        else:
-            # For pandas Series, use pd.testing.assert_series_equal for robust comparison
-            pd.testing.assert_series_equal(result, expected_output_or_exception, check_dtype=True)
-
-    except Exception as e:
-        # Check if an exception was raised and if its type matches the expected exception type.
-        if isinstance(expected_output_or_exception, type) and issubclass(expected_output_or_exception, Exception):
-            assert isinstance(e, expected_output_or_exception)
-        else:
-            # If an exception was raised but it was not the expected one, fail the test.
-            pytest.fail(f"An unexpected exception was raised: {type(e).__name__}({e})")
-
+@pytest.mark.parametrize("dataframe_input, expected_exception", [
+    # Test Case 1: Valid DataFrame with typical data
+    (pd.DataFrame({
+        'instrument_type': ['Loan', 'Deposit', 'Bond', 'Mortgage', 'NMD'],
+        'side': ['asset', 'liability', 'asset', 'asset', 'liability'],
+        'notional_amt': [1000, 500, 2000, 1500, 700]
+    }), None),
+    # Test Case 2: Empty DataFrame but with all required columns
+    (pd.DataFrame(columns=['instrument_type', 'side', 'notional_amt']), None),
+    # Test Case 3: DataFrame missing a required column ('instrument_type')
+    (pd.DataFrame({
+        'side': ['asset', 'liability'],
+        'notional_amt': [100, 200]
+    }), KeyError),
+    # Test Case 4: Invalid input type (not a pandas DataFrame)
+    ("this_is_not_a_dataframe", AttributeError),
+    # Test Case 5: 'notional_amt' column contains non-numeric data
+    (pd.DataFrame({
+        'instrument_type': ['Loan', 'Deposit'],
+        'side': ['asset', 'liability'],
+        'notional_amt': [1000, 'invalid_amount']
+    }), (TypeError, ValueError)),
+])
+def test_plot_balance_sheet_composition(dataframe_input, expected_exception):
+    """
+    Tests the plot_balance_sheet_composition function with various inputs,
+    covering expected functionality and edge cases.
+    """
+    if expected_exception is None:
+        try:
+            plot_balance_sheet_composition(dataframe_input)
+            # For valid inputs, we expect no exception. Plotting calls are mocked.
+            # We could add assertions here to check if sns.barplot.called, etc.
+            # but per example, just checking for no exception is acceptable for success.
+        except Exception as e:
+            pytest.fail(f"plot_balance_sheet_composition raised an unexpected exception: {e}")
+    else:
+        # For error cases, assert that the expected exception is raised.
+        with pytest.raises(expected_exception):
+            plot_balance_sheet_composition(dataframe_input)
