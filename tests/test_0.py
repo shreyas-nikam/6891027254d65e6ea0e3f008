@@ -1,96 +1,43 @@
 import pytest
-import os
 import pandas as pd
-from pathlib import Path
-import tempfile
+from definition_1eda19749e9b40d293fe9c1ab13641bc import generate_synthetic_portfolio
 
-# Keep the `your_module` block as it is. DO NOT REPLACE or REMOVE the block.
-from definition_a030173ade0a4ef29f96db7b669e49c3 import generate_synthetic_positions_data
-
-# Define expected columns based on the specification
-EXPECTED_COLUMNS = [
-    'instrument_id', 'instrument_type', 'side', 'notional_amt', 'currency',
-    'rate_type', 'fixed_rate', 'float_index', 'spread_bps', 'payment_freq',
-    'maturity_date', 'next_reprice_date', 'optionality_flag',
-    'core_fraction', 'prepay_rate'
-]
-
-@pytest.fixture
-def temp_output_file(tmp_path):
-    """Provides a temporary file path for output."""
-    return tmp_path / "test_positions.csv"
-
-def test_generate_synthetic_positions_data_happy_path(temp_output_file):
+@pytest.mark.parametrize(
+    "num_instruments, tier1_capital, start_date, end_date, expected_outcome",
+    [
+        # Test Case 1: Happy path - standard valid inputs
+        (5, 1000.0, "2023-01-01", "2025-12-31", "dataframe_5_rows"),
+        # Test Case 2: Edge case - zero instruments, should return an empty DataFrame
+        (0, 500.0, "2023-01-01", "2024-12-31", "dataframe_0_rows"),
+        # Test Case 3: Invalid input - negative number of instruments, should raise ValueError
+        (-1, 1500.0, "2023-01-01", "2025-12-31", ValueError),
+        # Test Case 4: Invalid date order - start_date after end_date, should raise ValueError
+        (10, 2000.0, "2025-01-01", "2023-01-01", ValueError),
+        # Test Case 5: Invalid type - non-float tier1_capital, should raise TypeError
+        (5, "invalid_capital", "2023-01-01", "2025-12-31", TypeError),
+    ]
+)
+def test_generate_synthetic_portfolio(num_instruments, tier1_capital, start_date, end_date, expected_outcome):
     """
-    Test case 1: Ensures data generation works with valid inputs,
-    creates a CSV, and contains expected columns and adheres to minimum rows.
+    Tests the generate_synthetic_portfolio function for various valid and invalid inputs.
     """
-    num_rows_requested = 5
-    generate_synthetic_positions_data(num_rows_requested, str(temp_output_file))
+    if isinstance(expected_outcome, type) and issubclass(expected_outcome, Exception):
+        # If an exception is expected, assert that the function raises it
+        with pytest.raises(expected_outcome):
+            generate_synthetic_portfolio(num_instruments, tier1_capital, start_date, end_date)
+    else:
+        # If a DataFrame is expected, call the function and assert its properties
+        df = generate_synthetic_portfolio(num_instruments, tier1_capital, start_date, end_date)
 
-    # Assert file exists
-    assert temp_output_file.exists()
-    assert temp_output_file.stat().st_size > 0 # Ensure file is not empty
+        # Assert that the returned object is a pandas DataFrame
+        assert isinstance(df, pd.DataFrame)
 
-    # Assert file is a valid CSV and contains data
-    df = pd.read_csv(temp_output_file)
+        if expected_outcome == "dataframe_5_rows":
+            # Assert that the DataFrame has the expected number of rows
+            assert len(df) == 5
+            # Further checks for expected columns (based on specification) could be added here
+            # e.g., assert 'instrument_id' in df.columns and 'balance' in df.columns
 
-    # The specification states "Ensure a minimum of 1,000 rows" in the code requirements,
-    # despite the function argument `num_rows` being described as "The minimum number of rows to generate".
-    # We will enforce the stricter (internal) minimum of 1000 rows as per the detailed spec.
-    assert df.shape[0] >= max(num_rows_requested, 1000)
-
-    # Assert expected columns are present
-    assert all(col in df.columns for col in EXPECTED_COLUMNS)
-
-def test_generate_synthetic_positions_data_zero_rows_requested(temp_output_file):
-    """
-    Test case 2: Ensures data generation works when 0 rows are requested,
-    adhering to the internal minimum (e.g., 1000) as per specification.
-    """
-    num_rows_requested = 0
-    generate_synthetic_positions_data(num_rows_requested, str(temp_output_file))
-
-    assert temp_output_file.exists()
-    assert temp_output_file.stat().st_size > 0 # Ensure file is not empty
-
-    df = pd.read_csv(temp_output_file)
-
-    # Even if 0 rows are requested, the spec says "Ensure a minimum of 1,000 rows."
-    assert df.shape[0] >= 1000
-    assert all(col in df.columns for col in EXPECTED_COLUMNS)
-
-def test_generate_synthetic_positions_data_invalid_num_rows_type():
-    """
-    Test case 3: Ensures TypeError is raised for invalid num_rows type (e.g., string).
-    """
-    invalid_num_rows = "invalid_number"
-    # Use a temporary path to avoid polluting the test directory
-    with tempfile.TemporaryDirectory() as tmpdir:
-        output_path = os.path.join(tmpdir, "dummy.csv")
-        with pytest.raises(TypeError):
-            generate_synthetic_positions_data(invalid_num_rows, output_path)
-
-def test_generate_synthetic_positions_data_invalid_output_path_type():
-    """
-    Test case 4: Ensures TypeError is raised for invalid output_file_path type (e.g., int).
-    """
-    num_rows = 10
-    invalid_output_path = 123
-    with pytest.raises(TypeError):
-        generate_synthetic_positions_data(num_rows, invalid_output_path)
-
-def test_generate_synthetic_positions_data_non_existent_directory(tmp_path):
-    """
-    Test case 5: Ensures an appropriate error is raised if the output directory does not exist.
-    """
-    # Create a path that includes a non-existent sub-directory
-    non_existent_dir = tmp_path / "non_existent_dir_12345"
-    output_file_path = non_existent_dir / "test_non_existent_dir.csv"
-
-    num_rows = 5
-
-    # Expect FileNotFoundError or OSError, as pandas' to_csv would typically raise this
-    # if the parent directory does not exist and `makedirs` is not implicitly called.
-    with pytest.raises((FileNotFoundError, OSError)):
-        generate_synthetic_positions_data(num_rows, str(output_file_path))
+        elif expected_outcome == "dataframe_0_rows":
+            # Assert that the DataFrame is empty for num_instruments=0
+            assert len(df) == 0
