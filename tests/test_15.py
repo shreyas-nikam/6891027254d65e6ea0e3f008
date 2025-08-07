@@ -1,122 +1,81 @@
 import pytest
-import os
-from unittest.mock import patch
-import io
-import sys
+import pandas as pd
+from unittest.mock import MagicMock
+from definition_d0bf928a49fd4828bfe9bbd1eb44b02b import save_data_to_parquet
 
-# Keep this block as is
-from definition_fc78a1592f58418b8f1c290b3d6e0be1 import verify_saved_artifacts
+@pytest.fixture
+def sample_dataframe():
+    """Returns a sample pandas DataFrame for testing."""
+    return pd.DataFrame({'id': [1, 2, 3], 'value': [100.5, 200.75, 300.0]})
 
-@patch('os.path.exists', return_value=True)
-def test_1_all_artifacts_exist(mock_exists, capsys):
+@pytest.fixture
+def empty_dataframe():
+    """Returns an empty pandas DataFrame for testing."""
+    return pd.DataFrame({'id': [], 'value': []})
+
+def test_save_data_to_parquet_successful(tmp_path, sample_dataframe, mocker):
     """
-    Test case: Verifies that the function correctly identifies all artifacts as 'FOUND'
-    when they are present, and prints the appropriate success message.
+    Test case 1: Verifies that save_data_to_parquet successfully calls
+    DataFrame.to_parquet with the correct arguments for a valid DataFrame.
     """
-    artifact_list = [
-        'irrbb_taiwan_positions.csv',
-        'models/part1/irrbb_taiwan_mortgage_prepay_model.pkl',
-        'another_dir/irrbb_taiwan_cashflows_long.parquet'
-    ]
-    base_directory = '/app/data'
+    mock_to_parquet = mocker.patch.object(pd.DataFrame, 'to_parquet', autospec=True)
+    filepath = tmp_path / "gap_table.parquet"
+
+    save_data_to_parquet(sample_dataframe, str(filepath))
+
+    # Assert that the to_parquet method was called exactly once on the DataFrame
+    # Note: `index=False` is a common and often expected argument when saving to Parquet,
+    # as Pandas DataFrame indices are usually not stored directly in Parquet files unless specified.
+    # The exact arguments depend on the implementation of save_data_to_parquet.
+    # We assume a standard use where index is not written to Parquet.
+    mock_to_parquet.assert_called_once_with(sample_dataframe, str(filepath), index=False)
+
+def test_save_data_to_parquet_empty_dataframe(tmp_path, empty_dataframe, mocker):
+    """
+    Test case 2: Verifies that save_data_to_parquet handles an empty DataFrame
+    correctly by calling DataFrame.to_parquet. Parquet can store empty data.
+    """
+    mock_to_parquet = mocker.patch.object(pd.DataFrame, 'to_parquet', autospec=True)
+    filepath = tmp_path / "empty_table.parquet"
+
+    save_data_to_parquet(empty_dataframe, str(filepath))
+
+    mock_to_parquet.assert_called_once_with(empty_dataframe, str(filepath), index=False)
+
+def test_save_data_to_parquet_invalid_dataframe_type(tmp_path):
+    """
+    Test case 3: Verifies that a TypeError is raised when the 'dataframe' argument
+    is not a pandas DataFrame, as specified in the docstring.
+    """
+    filepath = tmp_path / "invalid_type.parquet"
     
-    verify_saved_artifacts(artifact_list, base_directory)
+    with pytest.raises(TypeError):
+        save_data_to_parquet([1, 2, 3], str(filepath)) # List instead of DataFrame
+    with pytest.raises(TypeError):
+        save_data_to_parquet(None, str(filepath))     # None instead of DataFrame
 
-    captured = capsys.readouterr()
-    expected_output_lines = [
-        f"Verifying artifacts in: {base_directory}",
-        "[FOUND] irrbb_taiwan_positions.csv",
-        "[FOUND] models/part1/irrbb_taiwan_mortgage_prepay_model.pkl",
-        "[FOUND] another_dir/irrbb_taiwan_cashflows_long.parquet",
-        "All required artifacts found."
-    ]
-    
-    for line in expected_output_lines:
-        assert line in captured.out
-    
-    # Verify os.path.exists was called for each expected full path
-    mock_exists.assert_any_call(os.path.join(base_directory, 'irrbb_taiwan_positions.csv'))
-    mock_exists.assert_any_call(os.path.join(base_directory, 'models/part1/irrbb_taiwan_mortgage_prepay_model.pkl'))
-    mock_exists.assert_any_call(os.path.join(base_directory, 'another_dir/irrbb_taiwan_cashflows_long.parquet'))
-    assert mock_exists.call_count == len(artifact_list)
-
-def test_2_some_artifacts_missing(capsys):
+def test_save_data_to_parquet_invalid_filename_type(sample_dataframe):
     """
-    Test case: Verifies that the function correctly identifies both 'FOUND' and 'MISSING'
-    artifacts and prints the appropriate warning message.
+    Test case 4: Verifies that a TypeError is raised when the 'filename' argument
+    is not a string, as specified in the docstring.
     """
-    artifact_list = [
-        'irrbb_taiwan_eve_baseline.pkl',
-        'irrbb_taiwan_nii_results.pkl',
-        'missing_model.pkl'
-    ]
-    base_directory = '/app/data'
+    with pytest.raises(TypeError):
+        save_data_to_parquet(sample_dataframe, 12345)  # Integer instead of string
+    with pytest.raises(TypeError):
+        save_data_to_parquet(sample_dataframe, None)   # None instead of string
 
-    # Configure mock_exists to return True for the first two artifacts, False for the third
-    def mock_exists_side_effect(path):
-        if 'irrbb_taiwan_eve_baseline.pkl' in path or 'irrbb_taiwan_nii_results.pkl' in path:
-            return True
-        elif 'missing_model.pkl' in path:
-            return False
-        return False # Default for unexpected paths
-
-    with patch('os.path.exists', side_effect=mock_exists_side_effect) as mock_exists:
-        verify_saved_artifacts(artifact_list, base_directory)
-
-        captured = capsys.readouterr()
-        expected_output_lines = [
-            f"Verifying artifacts in: {base_directory}",
-            "[FOUND] irrbb_taiwan_eve_baseline.pkl",
-            "[FOUND] irrbb_taiwan_nii_results.pkl",
-            "[MISSING] missing_model.pkl",
-            "Some artifacts are missing."
-        ]
-        
-        for line in expected_output_lines:
-            assert line in captured.out
-        
-        # Verify os.path.exists was called for each expected full path
-        mock_exists.assert_any_call(os.path.join(base_directory, 'irrbb_taiwan_eve_baseline.pkl'))
-        mock_exists.assert_any_call(os.path.join(base_directory, 'irrbb_taiwan_nii_results.pkl'))
-        mock_exists.assert_any_call(os.path.join(base_directory, 'missing_model.pkl'))
-        assert mock_exists.call_count == len(artifact_list)
-
-@patch('os.path.exists') # Patch os.path.exists, though it shouldn't be called
-def test_3_empty_artifact_list(mock_exists, capsys):
+def test_save_data_to_parquet_io_error_during_save(tmp_path, sample_dataframe, mocker):
     """
-    Test case: Verifies that the function handles an empty artifact list gracefully,
-    printing a message indicating no artifacts to verify and not checking for files.
+    Test case 5: Simulates an IOError during the saving process (e.g., due to
+    disk full, permissions, or invalid path) and verifies that it is propagated.
     """
-    artifact_list = []
-    base_directory = '/some/path'
-    
-    verify_saved_artifacts(artifact_list, base_directory)
+    mock_to_parquet = mocker.patch.object(pd.DataFrame, 'to_parquet', 
+                                          side_effect=IOError("Simulated disk full error"),
+                                          autospec=True)
+    filepath = tmp_path / "problem_table.parquet"
 
-    captured = capsys.readouterr()
-    assert f"Verifying artifacts in: {base_directory}" in captured.out
-    assert "No artifacts specified for verification." in captured.out
-    assert "All required artifacts found." not in captured.out # Should not be printed
-    assert "Some artifacts are missing." not in captured.out # Should not be printed
-    mock_exists.assert_not_called() # Crucially, os.path.exists should not be called
+    with pytest.raises(IOError, match="Simulated disk full error"):
+        save_data_to_parquet(sample_dataframe, str(filepath))
 
-def test_4_invalid_artifact_list_type():
-    """
-    Test case: Verifies that the function raises a TypeError when 'artifact_list' is not a list.
-    """
-    invalid_artifact_lists = [None, "not_a_list", 123, {'a': 1}]
-    base_directory = '/valid/path'
-    
-    for invalid_list in invalid_artifact_lists:
-        with pytest.raises(TypeError, match="artifact_list must be a list"):
-            verify_saved_artifacts(invalid_list, base_directory)
-
-def test_5_invalid_base_directory_type():
-    """
-    Test case: Verifies that the function raises a TypeError when 'base_directory' is not a string.
-    """
-    artifact_list = ['file.csv']
-    invalid_base_directories = [None, 123, ['list_path'], {'dir': '/path'}]
-    
-    for invalid_dir in invalid_base_directories:
-        with pytest.raises(TypeError, match="base_directory must be a string"):
-            verify_saved_artifacts(artifact_list, invalid_dir)
+    # Ensure the saving attempt was made
+    mock_to_parquet.assert_called_once_with(sample_dataframe, str(filepath), index=False)
