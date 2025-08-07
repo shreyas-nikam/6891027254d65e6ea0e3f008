@@ -1,80 +1,93 @@
 import pytest
-from definition_f6f6f2815a4f4f268705f05561db0eea import generate_yield_curves
+import pandas as pd
+from datetime import datetime
+
+# Keep a placeholder definition_4699a7276ed9480683b5d156036b36af for the import of the module.
+# Keep the `your_module` block as it is. DO NOT REPLACE or REMOVE the block.
+from definition_4699a7276ed9480683b5d156036b36af import recalculate_cashflows_and_pv_for_scenario
+
+
+# Helper function to create a mock portfolio DataFrame
+def create_mock_portfolio_df(has_data=True):
+    if has_data:
+        data = {
+            'instrument_id': [1, 2, 3],
+            'category': ['Asset', 'Liability', 'Asset'],
+            'balance': [100000, 50000, 75000],
+            'rate_type': ['Fixed', 'Floating', 'Fixed'],
+            'index': [None, 'LIBOR', None],
+            'spread_bps': [None, 100, None],
+            'current_rate': [0.03, 0.015, 0.04],
+            'payment_freq': ['Monthly', 'Quarterly', 'Annual'],
+            'maturity_date': [pd.Timestamp('2028-12-31'), pd.Timestamp('2026-06-30'), pd.Timestamp('2030-01-15')],
+            'next_repricing_date': [pd.NaT, pd.Timestamp('2024-04-01'), pd.NaT],
+            'currency': ['USD', 'USD', 'USD'],
+            'embedded_option': ['No', 'No', 'Yes'],
+            'is_core_NMD': ['No', 'No', 'No'],
+            'behavioural_flag': [None, None, 'Mortgage_Prepay']
+        }
+        return pd.DataFrame(data)
+    return pd.DataFrame(columns=[
+        'instrument_id', 'category', 'balance', 'rate_type', 'index', 'spread_bps',
+        'current_rate', 'payment_freq', 'maturity_date', 'next_repricing_date',
+        'currency', 'embedded_option', 'is_core_NMD', 'behavioural_flag'
+    ])
+
+# Helper function to create a mock shocked curve DataFrame
+def create_mock_shocked_curve(valid=True, missing_col=False):
+    if not valid:
+        return pd.DataFrame() # An empty DataFrame might represent an invalid curve
+    
+    data = {
+        'date': pd.to_datetime(['2023-01-01', '2024-01-01', '2025-01-01', '2030-01-01']),
+        'rate': [0.01, 0.015, 0.02, 0.025]
+    }
+    if missing_col:
+        del data['rate'] # Simulate missing crucial column
+    return pd.DataFrame(data)
+
+# Mock valuation date for consistent testing
+mock_valuation_date = datetime(2023, 1, 1)
 
 @pytest.mark.parametrize(
-    "baseline_params, expected_outcome",
+    "portfolio_df_input, shocked_curve_input, valuation_date_input, scenario_type_input, expected",
     [
-        # Test Case 1: Happy Path - Valid baseline parameters, check overall structure and baseline rates
-        # Assumes the function returns a dict mapping tenor to rate for the curve.
-        ({"tenors": [1.0, 5.0, 10.0], "rates": [0.01, 0.015, 0.02]}, 
-         {"type": "success", "expected_baseline_rates": {1.0: 0.01, 5.0: 0.015, 10.0: 0.02}, "check_shock_scenario": None}),
+        # Test Case 1: Valid inputs - Expected functionality
+        # Assumes a calculated EVE value under a valid scenario.
+        (create_mock_portfolio_df(has_data=True), create_mock_shocked_curve(valid=True), mock_valuation_date, 'Parallel Up', 55000.75),
 
-        # Test Case 2: Edge Case - Empty baseline parameters
-        # The function requires parameters to define the curve, so an empty dict should raise an error.
-        ({}, 
-         {"type": "error", "error_class": ValueError}),
+        # Test Case 2: Empty Portfolio - Edge case, EVE should typically be 0.0
+        # If no instruments, no cash flows, thus no value.
+        (create_mock_portfolio_df(has_data=False), create_mock_shocked_curve(valid=True), mock_valuation_date, 'Parallel Down', 0.0),
 
-        # Test Case 3: Edge Case - Invalid type for baseline parameters (e.g., list instead of dict)
-        ([1, 2, 3], 
-         {"type": "error", "error_class": TypeError}),
-        
-        # Test Case 4: Verify Parallel Up Shock Logic (200 bps shift up)
-        ({"tenors": [1.0, 5.0, 10.0], "rates": [0.01, 0.015, 0.02]}, 
-         {"type": "success", "expected_baseline_rates": None, "check_shock_scenario": {"Parallel Up": 0.02}}), # 0.02 = 200 basis points
+        # Test Case 3: Malformed shocked_curve (missing 'rate' column) - Edge case, expects an error
+        # The function relies on specific columns in shocked_curve for discounting.
+        (create_mock_portfolio_df(has_data=True), create_mock_shocked_curve(valid=True, missing_col=True), mock_valuation_date, 'Steepener', KeyError),
 
-        # Test Case 5: Verify Parallel Down Shock Logic with a rate floor at 0.0
-        # Rates are low, so a -200bps shock will hit the floor.
-        ({"tenors": [1.0, 5.0, 10.0], "rates": [0.005, 0.01, 0.015]}, # 50bp, 100bp, 150bp
-         {"type": "success", "expected_baseline_rates": None, "check_shock_scenario": {"Parallel Down": -0.02}}) # -0.02 = -200 basis points
+        # Test Case 4: Invalid valuation_date type (e.g., string instead of datetime) - Edge case, expects a TypeError
+        # Input validation for argument types is crucial.
+        (create_mock_portfolio_df(has_data=True), create_mock_shocked_curve(valid=True), "2023-01-01_invalid", 'Flattener', TypeError),
+
+        # Test Case 5: Unknown scenario_type - Edge case, expects a ValueError
+        # The function likely uses scenario_type for specific logic (e.g., adjusting behavioral assumptions,
+        # or looking up specific shock parameters), so an unknown type should be handled.
+        (create_mock_portfolio_df(has_data=True), create_mock_shocked_curve(valid=True), mock_valuation_date, 'NonExistentScenario', ValueError),
     ]
 )
-def test_generate_yield_curves(baseline_params, expected_outcome):
+def test_recalculate_cashflows_and_pv_for_scenario(portfolio_df_input, shocked_curve_input, valuation_date_input, scenario_type_input, expected):
     """
-    Tests the generate_yield_curves function for various inputs,
-    including valid scenarios, invalid input types, and specific shock logic.
+    Test cases for recalculate_cashflows_and_pv_for_scenario function.
+    Tests cover expected functionality and various edge cases related to input data.
     """
-    if expected_outcome["type"] == "error":
-        with pytest.raises(expected_outcome["error_class"]):
-            generate_yield_curves(baseline_params)
-    else:
-        baseline_curve, scenario_curves = generate_yield_curves(baseline_params)
-
-        # Assertions common to all successful cases
-        assert isinstance(baseline_curve, dict), "Baseline curve should be a dictionary."
-        assert isinstance(scenario_curves, dict), "Scenario curves should be a dictionary."
-        assert len(scenario_curves) == 6, "Expected 6 Basel-mandated scenario curves."
-
-        expected_scenario_names = [
-            "Parallel Up", "Parallel Down", "Steepener", "Flattener", "Short Up", "Short Down"
-        ]
-        for name in expected_scenario_names:
-            assert name in scenario_curves, f"Missing expected scenario: {name}"
-            assert isinstance(scenario_curves[name], dict), f"Scenario '{name}' curve should be a dictionary."
-            # All scenario curves should have the same tenors as the baseline curve generated from params
-            assert set(scenario_curves[name].keys()) == set(baseline_curve.keys()), \
-                f"Tenors for '{name}' curve do not match baseline curve."
-
-        # Specific assertion for Test Case 1: Check baseline curve values
-        if expected_outcome.get("expected_baseline_rates"):
-            for tenor, rate in expected_outcome["expected_baseline_rates"].items():
-                assert tenor in baseline_curve, f"Tenor {tenor} not found in baseline curve."
-                assert baseline_curve[tenor] == pytest.approx(rate), \
-                    f"Baseline rate for tenor {tenor} does not match expected."
-
-        # Specific assertions for Test Cases 4 & 5: Check shock logic
-        if expected_outcome.get("check_shock_scenario"):
-            for shock_name, shock_amount in expected_outcome["check_shock_scenario"].items():
-                shocked_curve = scenario_curves.get(shock_name)
-                assert shocked_curve is not None, f"Specific shock scenario '{shock_name}' curve not found."
-                
-                for tenor, baseline_rate in baseline_curve.items():
-                    expected_rate = baseline_rate + shock_amount
-                    
-                    # Apply floor for interest rates, especially for Parallel Down shock
-                    if shock_name == "Parallel Down":
-                        # Interest rates typically do not go below zero, or a very small positive number (e.g., 1bp)
-                        # Assuming a hard floor of 0.0 for this test.
-                        expected_rate = max(0.0, expected_rate) 
-                    
-                    assert shocked_curve[tenor] == pytest.approx(expected_rate), \
-                        f"{shock_name} curve rate for tenor {tenor} is incorrect."
+    try:
+        # Call the function with the parameterized inputs
+        result = recalculate_cashflows_and_pv_for_scenario(
+            portfolio_df_input, shocked_curve_input, valuation_date_input, scenario_type_input
+        )
+        # If no exception, assert the return value.
+        # Note: For a 'pass' stub, this will always return None, leading to failures for non-None expected values.
+        # This setup follows the example output's implicit expectation that tests are against intended functionality.
+        assert result == expected
+    except Exception as e:
+        # If an exception is caught, assert its type matches the expected exception type.
+        assert isinstance(e, expected)
