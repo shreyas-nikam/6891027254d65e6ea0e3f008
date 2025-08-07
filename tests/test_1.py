@@ -1,80 +1,76 @@
 import pytest
 import pandas as pd
-import os
-from definition_dcf6180cd15c4a56a4d3b3e2e59f6368 import load_positions_data
+from datetime import datetime
+import numpy as np
 
-# Test 1: Successful load of a well-formed CSV file
-def test_load_positions_data_success(tmp_path):
-    """
-    Tests if the function correctly loads a valid CSV file into a pandas DataFrame,
-    verifying its type, shape, and content.
-    """
-    file_content = """instrument_id,instrument_type,notional_amt,maturity_date,currency
-1,Loan,100000,2025-01-01,TWD
-2,Deposit,50000,2024-06-30,TWD
-3,Bond,200000,2030-12-31,TWD
-"""
-    file_path = tmp_path / "irrbb_test_positions.csv"
-    file_path.write_text(file_content)
+# Placeholder for your module import
+from definition_6db3ba6ef96d46ababae97129f33e6bc import create_baseline_discount_curve
 
-    df = load_positions_data(str(file_path))
-
-    assert isinstance(df, pd.DataFrame)
-    assert not df.empty
-    assert df.shape == (3, 5)
-    assert df.loc[0, 'notional_amt'] == 100000
-    assert df.loc[2, 'instrument_type'] == 'Bond'
-    assert df.columns.tolist() == ['instrument_id', 'instrument_type', 'notional_amt', 'maturity_date', 'currency']
-
-# Test 2: Handles a non-existent file path
-def test_load_positions_data_file_not_found():
-    """
-    Tests that a FileNotFoundError is raised when the specified file path does not exist.
-    """
-    non_existent_path = "non_existent_data.csv"
-    with pytest.raises(FileNotFoundError):
-        load_positions_data(non_existent_path)
-
-# Test 3: Handles a completely empty CSV file (no headers, no data)
-def test_load_positions_data_empty_file_no_headers(tmp_path):
-    """
-    Tests that pandas.errors.EmptyDataError is raised when the CSV file is completely empty,
-    as pd.read_csv expects at least headers or some data.
-    """
-    empty_file_path = tmp_path / "empty_no_headers.csv"
-    empty_file_path.write_text("")
-
-    with pytest.raises(pd.errors.EmptyDataError):
-        load_positions_data(str(empty_file_path))
-
-# Test 4: Handles a CSV file containing only headers, but no data rows
-def test_load_positions_data_headers_only(tmp_path):
-    """
-    Tests that the function returns an empty DataFrame with the correct columns
-    when the CSV file contains only headers but no data rows.
-    """
-    headers_only_content = "instrument_id,instrument_type,notional_amt,maturity_date\n"
-    headers_only_file_path = tmp_path / "headers_only.csv"
-    headers_only_file_path.write_text(headers_only_content)
-
-    df = load_positions_data(str(headers_only_file_path))
-
-    assert isinstance(df, pd.DataFrame)
-    assert df.empty  # The DataFrame should be empty of rows
-    assert df.columns.tolist() == ['instrument_id', 'instrument_type', 'notional_amt', 'maturity_date']
-
-# Test 5: Handles a malformed CSV file (e.g., inconsistent number of columns)
-def test_load_positions_data_malformed_csv(tmp_path):
-    """
-    Tests that a pandas.errors.ParserError is raised for a malformed CSV file
-    where rows have an inconsistent number of columns.
-    """
-    malformed_content = """instrument_id,instrument_type,notional_amt
-1,Loan,100000
-2,Deposit # This row is missing a column
-"""
-    malformed_file_path = tmp_path / "malformed.csv"
-    malformed_file_path.write_text(malformed_content)
-
-    with pytest.raises(pd.errors.ParserError):
-        load_positions_data(str(malformed_file_path))
+@pytest.mark.parametrize(
+    "valuation_date, market_rates, tenors_in_months, liquidity_spread_bps, expected",
+    [
+        # Test Case 1: Basic valid inputs with interpolation and spread
+        (
+            datetime(2023, 1, 1),
+            {'1M': 0.01, '1Y': 0.015, '5Y': 0.02}, # Market rates for 1 month, 12 months, 60 months
+            [1, 3, 6, 12, 24, 60], # Target tenors in months, requiring interpolation
+            10, # 10 bps liquidity spread
+            pd.DataFrame({
+                'Tenor_Months': [1, 3, 6, 12, 24, 60],
+                'Discount_Rate': [
+                    0.01 + 0.0010, # 1M (actual rate + spread)
+                    0.010909090909090908 + 0.0010, # 3M (interpolated rate + spread)
+                    0.012272727272727272 + 0.0010, # 6M (interpolated rate + spread)
+                    0.015 + 0.0010, # 12M (actual rate + spread)
+                    0.01625 + 0.0010, # 24M (interpolated rate + spread)
+                    0.02 + 0.0010 # 60M (actual rate + spread)
+                ]
+            })
+        ),
+        # Test Case 2: Edge case - Empty market_rates dictionary
+        # Should raise an error as interpolation requires data points.
+        (
+            datetime(2023, 1, 1),
+            {},
+            [1, 3, 6, 12],
+            10,
+            ValueError # Expected exception for insufficient data for interpolation
+        ),
+        # Test Case 3: Edge case - Empty tenors_in_months list
+        # Should return an empty DataFrame with the correct columns, as no curve points are requested.
+        (
+            datetime(2023, 1, 1),
+            {'1M': 0.01, '1Y': 0.015},
+            [],
+            10,
+            pd.DataFrame(columns=['Tenor_Months', 'Discount_Rate'])
+        ),
+        # Test Case 4: Edge case - Single market rate point
+        # A single market rate point is insufficient to construct a curve requiring interpolation,
+        # typically leading to an error in interpolation libraries for standard interpolation kinds.
+        (
+            datetime(2023, 1, 1),
+            {'1Y': 0.015}, # Only one market rate point
+            [1, 3, 6, 12, 24], # Multiple target tenors
+            10,
+            ValueError # Expected exception (e.g., from scipy.interpolate.interp1d requiring >1 point)
+        ),
+        # Test Case 5: Error handling - Invalid type for liquidity_spread_bps
+        # Expect a TypeError if a non-numeric value is passed for a numerical argument.
+        (
+            datetime(2023, 1, 1),
+            {'1M': 0.01, '1Y': 0.015},
+            [1, 3, 6, 12],
+            "invalid_spread", # Invalid type (string instead of float)
+            TypeError # Expected exception
+        ),
+    ]
+)
+def test_create_baseline_discount_curve(valuation_date, market_rates, tenors_in_months, liquidity_spread_bps, expected):
+    try:
+        result_df = create_baseline_discount_curve(valuation_date, market_rates, tenors_in_months, liquidity_spread_bps)
+        # Assertions for successful execution (DataFrame output)
+        pd.testing.assert_frame_equal(result_df, expected, check_exact=False, atol=1e-7)
+    except Exception as e:
+        # Assertions for expected exceptions
+        assert isinstance(e, expected)
