@@ -1,59 +1,88 @@
 import pytest
-import matplotlib.pyplot as plt # Required for patching
-from definition_9381efd3229f43598fdb769087046090 import plot_eve_waterfall_chart
+import pandas as pd
+import os
 
-@pytest.mark.parametrize(
-    "baseline_eve, scenario_eve, scenario_name, expected_exception",
-    [
-        # Test Case 1: Standard EVE increase (positive change)
-        (1000.0, 1200.0, "Parallel Up (+200bp)", None),
-        # Test Case 2: Standard EVE decrease (negative change)
-        (1000.0, 800.0, "Parallel Down (-200bp)", None),
-        # Test Case 3: No change in EVE (edge case)
-        (500.0, 500.0, "No Change Scenario", None),
-        # Test Case 4: Invalid type for baseline_eve (expect TypeError)
-        ("invalid_float", 1200.0, "Invalid Baseline EVE", TypeError),
-        # Test Case 5: Invalid type for scenario_name (expect TypeError)
-        (1000.0, 1200.0, 123, TypeError),
-    ]
-)
-def test_plot_eve_waterfall_chart(mocker, baseline_eve, scenario_eve, scenario_name, expected_exception):
-    # Mock matplotlib.pyplot functions to prevent actual plotting and verify calls
-    mock_plt_figure = mocker.patch('matplotlib.pyplot.figure')
-    mock_plt_show = mocker.patch('matplotlib.pyplot.show')
-    mock_plt_bar = mocker.patch('matplotlib.pyplot.bar')
-    mock_plt_title = mocker.patch('matplotlib.pyplot.title')
-    mock_plt_ylabel = mocker.patch('matplotlib.pyplot.ylabel')
-    mock_plt_xticks = mocker.patch('matplotlib.pyplot.xticks')
-    mock_plt_grid = mocker.patch('matplotlib.pyplot.grid')
-    mock_plt_tight_layout = mocker.patch('matplotlib.pyplot.tight_layout')
+# Placeholder for your module import
+# DO NOT REPLACE or REMOVE this block
+from definition_6a154ad0007746ab9e3f8d0c563eb0cd import save_data_to_csv
 
-    if expected_exception:
-        # If an exception is expected, assert that it is raised
-        with pytest.raises(expected_exception):
-            plot_eve_waterfall_chart(baseline_eve, scenario_eve, scenario_name)
-        
-        # Ensure no plotting functions were called if an exception occurred due to invalid input
-        mock_plt_figure.assert_not_called()
-        mock_plt_show.assert_not_called()
-        mock_plt_bar.assert_not_called()
-        mock_plt_title.assert_not_called()
-        mock_plt_ylabel.assert_not_called()
-        mock_plt_xticks.assert_not_called()
-        mock_plt_grid.assert_not_called()
-        mock_plt_tight_layout.assert_not_called()
+@pytest.fixture
+def sample_dataframe():
+    """Returns a sample pandas DataFrame for testing."""
+    data = {'col1': [1, 2, 3], 'col2': ['A', 'B', 'C']}
+    return pd.DataFrame(data)
+
+@pytest.fixture
+def empty_dataframe_with_cols():
+    """Returns an empty pandas DataFrame with specified columns."""
+    return pd.DataFrame(columns=['col1', 'col2'])
+
+def test_save_data_to_csv_success(tmp_path, sample_dataframe):
+    """
+    Test case 1: Verify a DataFrame is successfully saved to a CSV file.
+    Covers expected functionality.
+    """
+    filename = tmp_path / "test_portfolio.csv"
+    save_data_to_csv(sample_dataframe, str(filename))
+
+    assert os.path.exists(filename)
+    loaded_df = pd.read_csv(filename)
+    pd.testing.assert_frame_equal(loaded_df, sample_dataframe)
+
+def test_save_data_to_csv_empty_dataframe_with_headers(tmp_path, empty_dataframe_with_cols):
+    """
+    Test case 2: Verify an empty DataFrame (with columns) is saved correctly.
+    Covers an edge case where the DataFrame is empty but has headers.
+    """
+    filename = tmp_path / "empty_portfolio.csv"
+    save_data_to_csv(empty_dataframe_with_cols, str(filename))
+
+    assert os.path.exists(filename)
+    loaded_df = pd.read_csv(filename)
+    pd.testing.assert_frame_equal(loaded_df, empty_dataframe_with_cols)
+
+@pytest.mark.parametrize("invalid_df, expected_exception", [
+    (None, AttributeError),  # None does not have .to_csv method
+    ("not a dataframe", AttributeError), # string does not have .to_csv method
+    ([1, 2, 3], AttributeError) # list does not have .to_csv method
+])
+def test_save_data_to_csv_invalid_dataframe_type(tmp_path, invalid_df, expected_exception):
+    """
+    Test case 3: Verify appropriate error is raised for invalid dataframe types.
+    Covers error handling for incorrect input types for 'dataframe'.
+    """
+    filename = tmp_path / "invalid_df_test.csv"
+    with pytest.raises(expected_exception):
+        save_data_to_csv(invalid_df, str(filename))
+
+@pytest.mark.parametrize("invalid_filename, expected_exception", [
+    (None, TypeError),
+    (123, TypeError),
+    (True, TypeError),
+])
+def test_save_data_to_csv_invalid_filename_type(sample_dataframe, invalid_filename, expected_exception):
+    """
+    Test case 4: Verify appropriate error is raised for invalid filename types.
+    Covers error handling for incorrect input types for 'filename'.
+    """
+    with pytest.raises(expected_exception):
+        save_data_to_csv(sample_dataframe, invalid_filename)
+
+def test_save_data_to_csv_non_writable_path(sample_dataframe):
+    """
+    Test case 5: Verify an OSError or similar is raised when the path is not writable.
+    Covers an edge case related to file system permissions or invalid paths.
+    This test attempts to write to a path that is typically not writable or valid.
+    """
+    # Attempt to write to a root directory (Unix-like) or an invalid drive (Windows)
+    # These paths generally trigger PermissionError/OSError/FileNotFoundError.
+    if os.name == 'posix':  # Unix-like systems
+        invalid_path = "/root/non_existent_test.csv"  # Non-writable for non-root users
+    elif os.name == 'nt':  # Windows systems
+        invalid_path = "Z:\\invalid_drive\\test.csv" # Assuming Z: is an unassigned drive letter
     else:
-        # For valid inputs, the function should execute without raising an exception
-        # and should call the relevant matplotlib functions.
-        plot_eve_waterfall_chart(baseline_eve, scenario_eve, scenario_name)
+        pytest.skip("Test for non-writable path is OS-specific and not configured for this OS.")
+        return
 
-        # Assert that core plotting functions were called at least once
-        mock_plt_figure.assert_called_once()
-        mock_plt_show.assert_called_once()
-        # A waterfall chart typically uses plt.bar multiple times for segments
-        mock_plt_bar.assert_called() 
-        mock_plt_title.assert_called_once()
-        mock_plt_ylabel.assert_called_once()
-        mock_plt_xticks.assert_called_once()
-        mock_plt_grid.assert_called_once()
-        mock_plt_tight_layout.assert_called_once()
+    with pytest.raises((OSError, FileNotFoundError, PermissionError)):
+        save_data_to_csv(sample_dataframe, invalid_path)
