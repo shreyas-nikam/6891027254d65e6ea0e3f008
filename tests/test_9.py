@@ -1,96 +1,214 @@
 import pytest
 import pandas as pd
-from unittest.mock import patch, MagicMock
+from datetime import datetime
 
-# Keep a placeholder definition_28efa080edf441b5a4bec91213ce7738 for the import of the module. Keep the `your_module` block as it is. DO NOT REPLACE or REMOVE the block.
-from definition_28efa080edf441b5a4bec91213ce7738 import plot_gap_table_heatmap
+# Keep this placeholder
+from definition_0009a37ef65e411ebbe6c267fce43739 import reprice_floating_instrument_cashflows_under_shock
 
-@pytest.fixture
-def mock_plotting_libs():
-    """Mocks seaborn and matplotlib.pyplot to prevent actual plotting."""
-    with patch('seaborn.heatmap') as mock_heatmap, \
-         patch('matplotlib.pyplot.show') as mock_show, \
-         patch('matplotlib.pyplot.title') as mock_title, \
-         patch('matplotlib.pyplot.xlabel') as mock_xlabel, \
-         patch('matplotlib.pyplot.ylabel') as mock_ylabel:
-        yield mock_heatmap, mock_show, mock_title, mock_xlabel, mock_ylabel
+# Helper to create a base cashflow df template with specified dtypes for consistency
+def create_cashflow_df_template():
+    return pd.DataFrame(columns=[
+        'date', 
+        'cash_flow_type', 
+        'amount', 
+        'is_floating_rate', 
+        'original_principal' # Assumed required for re-calculating interest
+    ]).astype({
+        'date': 'datetime64[ns]', 
+        'cash_flow_type': 'object', 
+        'amount': 'float64', 
+        'is_floating_rate': 'bool',
+        'original_principal': 'float64'
+    })
 
-def test_plot_gap_table_heatmap_valid_data(mock_plotting_libs):
-    """Test with a valid, typical gap table DataFrame, ensuring plotting functions are called."""
-    mock_heatmap, mock_show, mock_title, mock_xlabel, mock_ylabel = mock_plotting_libs
-
-    data = {
-        '0-1M': [100, 80, 20],
-        '1-3M': [200, 220, -20],
-        '3-6M': [150, 100, 50]
-    }
-    # Index should represent rows, e.g., 'Assets', 'Liabilities', 'Net Gap'
-    df = pd.DataFrame(data, index=['Assets', 'Liabilities', 'Net Gap'])
-
-    result = plot_gap_table_heatmap(df)
-
-    assert result is None
-    mock_heatmap.assert_called_once()
-    # Verify heatmap was called with the correct DataFrame
-    pd.testing.assert_frame_equal(mock_heatmap.call_args[0][0], df)
-    mock_title.assert_called_once_with("Gap Table Heatmap: Repricing Mismatches Across Basel Buckets")
-    # Asserting xlabel/ylabel based on common heatmap interpretation, assuming they are set
-    mock_xlabel.assert_called_once_with("Time Buckets") 
-    mock_ylabel.assert_called_once_with("Instrument Type / Gap Metric")
-    mock_show.assert_called_once()
-
-def test_plot_gap_table_heatmap_empty_dataframe(mock_plotting_libs):
-    """Test with an empty DataFrame, expecting no error and plotting functions to be called."""
-    mock_heatmap, mock_show, _, _, _ = mock_plotting_libs
-
-    df_empty = pd.DataFrame()
-
-    result = plot_gap_table_heatmap(df_empty)
-
-    assert result is None
-    # Seaborn's heatmap generally handles empty DataFrames without error, producing an empty plot.
-    mock_heatmap.assert_called_once()
-    pd.testing.assert_frame_equal(mock_heatmap.call_args[0][0], df_empty)
-    mock_show.assert_called_once()
-
-def test_plot_gap_table_heatmap_non_numeric_data():
-    """Test with a DataFrame containing non-numeric data, expecting an error from plotting library."""
-    data = {
-        '0-1M': [100, 80, 'invalid'], # 'invalid' is non-numeric
-        '1-3M': [200, 220, -20]
-    }
-    df_non_numeric = pd.DataFrame(data, index=['Assets', 'Liabilities', 'Net Gap'])
-
-    with pytest.raises(Exception) as excinfo:
-        plot_gap_table_heatmap(df_non_numeric)
+# Test 1: Basic Floating Repricing - Some cash flows re-priced, some remain unchanged
+def test_reprice_floating_instrument_cashflows_basic():
+    next_repricing_date = pd.Timestamp('2023-07-01')
     
-    # Expecting an error from pandas/seaborn when trying to process non-numeric data for heatmap
-    # Common errors are TypeError or ValueError related to data conversion.
-    assert isinstance(excinfo.value, (TypeError, ValueError))
-    # A more specific message check could be added if the exact error signature from the
-    # internal implementation (via seaborn) is known, e.g., "could not convert string to float"
+    # instrument_cashflow_df:
+    # CF1: Floating, before repricing date -> amount remains unchanged
+    # CF2: Floating, after repricing date, interest -> amount re-priced
+    # CF3: Floating, after repricing date, interest -> amount re-priced
+    # CF4: Floating, after repricing date, principal -> amount remains unchanged (principals are not re-priced by interest shocks)
+    instrument_cashflow_data = [
+        {'date': pd.Timestamp('2023-04-01'), 'cash_flow_type': 'interest', 'amount': 100.0, 'is_floating_rate': True, 'original_principal': 10000.0},
+        {'date': pd.Timestamp('2023-10-01'), 'cash_flow_type': 'interest', 'amount': 100.0, 'is_floating_rate': True, 'original_principal': 10000.0},
+        {'date': pd.Timestamp('2024-04-01'), 'cash_flow_type': 'interest', 'amount': 100.0, 'is_floating_rate': True, 'original_principal': 10000.0},
+        {'date': pd.Timestamp('2024-10-01'), 'cash_flow_type': 'principal', 'amount': 1000.0, 'is_floating_rate': True, 'original_principal': 9000.0}, 
+    ]
+    instrument_cashflow_df = pd.DataFrame(instrument_cashflow_data, dtype=object).astype({
+        'date': 'datetime64[ns]', 'cash_flow_type': 'object', 'amount': 'float64', 
+        'is_floating_rate': 'bool', 'original_principal': 'float64'
+    })
 
-@pytest.mark.parametrize("invalid_input", [
-    None,
-    [1, 2, 3],
-    "not a dataframe",
-    123,
-    {'key': 'value'}
+    # instrument_data: Includes 'next_repricing_date', 'index' (e.g., 'EIBOR'), 'spread_bps'
+    instrument_data = pd.Series({
+        'next_repricing_date': next_repricing_date,
+        'index': 'EIBOR', # Name of the index, not a rate
+        'spread_bps': 50 # 0.50%
+    }).astype({
+        'next_repricing_date': 'datetime64[ns]',
+        'index': 'object',
+        'spread_bps': 'int64'
+    })
+
+    # shocked_curve: Contains date-rate pairs to be used for repricing
+    shocked_curve = pd.DataFrame([
+        {'date': pd.Timestamp('2023-10-01'), 'rate': 0.03},
+        {'date': pd.Timestamp('2024-04-01'), 'rate': 0.035},
+        {'date': pd.Timestamp('2024-10-01'), 'rate': 0.04}, 
+    ]).astype({'date': 'datetime64[ns]', 'rate': 'float64'})
+    
+    # Expected re-priced amounts calculation logic:
+    # New Interest Amount = original_principal * (shocked_rate + (spread_bps / 10000))
+    # CF1 amount: 100.0 (unchanged, as its date < next_repricing_date)
+    # CF2 amount: 10000.0 * (0.03 + 0.005) = 350.0
+    # CF3 amount: 10000.0 * (0.035 + 0.005) = 400.0
+    # CF4 amount: 1000.0 (principal, unchanged)
+
+    expected_data = [
+        {'date': pd.Timestamp('2023-04-01'), 'cash_flow_type': 'interest', 'amount': 100.0, 'is_floating_rate': True, 'original_principal': 10000.0},
+        {'date': pd.Timestamp('2023-10-01'), 'cash_flow_type': 'interest', 'amount': 350.0, 'is_floating_rate': True, 'original_principal': 10000.0},
+        {'date': pd.Timestamp('2024-04-01'), 'cash_flow_type': 'interest', 'amount': 400.0, 'is_floating_rate': True, 'original_principal': 10000.0},
+        {'date': pd.Timestamp('2024-10-01'), 'cash_flow_type': 'principal', 'amount': 1000.0, 'is_floating_rate': True, 'original_principal': 9000.0},
+    ]
+    expected_df = pd.DataFrame(expected_data, dtype=object).astype({
+        'date': 'datetime64[ns]', 'cash_flow_type': 'object', 'amount': 'float64', 
+        'is_floating_rate': 'bool', 'original_principal': 'float64'
+    })
+
+    result_df = reprice_floating_instrument_cashflows_under_shock(
+        instrument_cashflow_df.copy(), instrument_data.copy(), shocked_curve.copy()
+    )
+
+    pd.testing.assert_frame_equal(result_df, expected_df, check_dtype=True, check_exact=False, atol=1e-9)
+
+# Test 2: Fixed Rate Instrument - No Repricing Expected
+def test_reprice_fixed_instrument_no_change():
+    instrument_cashflow_data = [
+        {'date': pd.Timestamp('2023-04-01'), 'cash_flow_type': 'interest', 'amount': 100.0, 'is_floating_rate': False, 'original_principal': 10000.0},
+        {'date': pd.Timestamp('2023-10-01'), 'cash_flow_type': 'principal', 'amount': 1000.0, 'is_floating_rate': False, 'original_principal': 10000.0},
+    ]
+    instrument_cashflow_df = pd.DataFrame(instrument_cashflow_data, dtype=object).astype({
+        'date': 'datetime64[ns]', 'cash_flow_type': 'object', 'amount': 'float64', 
+        'is_floating_rate': 'bool', 'original_principal': 'float64'
+    })
+    instrument_data = pd.Series({
+        'next_repricing_date': pd.Timestamp('2023-07-01'),
+        'index': 'FIXED_RATE',
+        'spread_bps': 0
+    }).astype({
+        'next_repricing_date': 'datetime64[ns]',
+        'index': 'object',
+        'spread_bps': 'int64'
+    })
+    shocked_curve = pd.DataFrame([
+        {'date': pd.Timestamp('2023-04-01'), 'rate': 0.02},
+        {'date': pd.Timestamp('2023-10-01'), 'rate': 0.03},
+    ]).astype({'date': 'datetime64[ns]', 'rate': 'float64'})
+
+    expected_df = instrument_cashflow_df.copy() # Expect no changes for fixed-rate instruments
+
+    result_df = reprice_floating_instrument_cashflows_under_shock(
+        instrument_cashflow_df.copy(), instrument_data.copy(), shocked_curve.copy()
+    )
+    
+    pd.testing.assert_frame_equal(result_df, expected_df, check_dtype=True)
+
+# Test 3: Floating Instrument, all cash flows occur before the next repricing date -> No Repricing
+def test_reprice_floating_instrument_before_repricing_date():
+    instrument_cashflow_data = [
+        {'date': pd.Timestamp('2023-04-01'), 'cash_flow_type': 'interest', 'amount': 100.0, 'is_floating_rate': True, 'original_principal': 10000.0},
+        {'date': pd.Timestamp('2023-05-01'), 'cash_flow_type': 'interest', 'amount': 100.0, 'is_floating_rate': True, 'original_principal': 10000.0},
+    ]
+    instrument_cashflow_df = pd.DataFrame(instrument_cashflow_data, dtype=object).astype({
+        'date': 'datetime64[ns]', 'cash_flow_type': 'object', 'amount': 'float64', 
+        'is_floating_rate': 'bool', 'original_principal': 'float64'
+    })
+    instrument_data = pd.Series({
+        'next_repricing_date': pd.Timestamp('2023-07-01'), # All CFs are before this date
+        'index': 'EIBOR',
+        'spread_bps': 50
+    }).astype({
+        'next_repricing_date': 'datetime64[ns]',
+        'index': 'object',
+        'spread_bps': 'int64'
+    })
+    shocked_curve = pd.DataFrame([
+        {'date': pd.Timestamp('2023-04-01'), 'rate': 0.02},
+        {'date': pd.Timestamp('2023-05-01'), 'rate': 0.025},
+    ]).astype({'date': 'datetime64[ns]', 'rate': 'float64'})
+
+    expected_df = instrument_cashflow_df.copy() # Expect no changes
+
+    result_df = reprice_floating_instrument_cashflows_under_shock(
+        instrument_cashflow_df.copy(), instrument_data.copy(), shocked_curve.copy()
+    )
+
+    pd.testing.assert_frame_equal(result_df, expected_df, check_dtype=True)
+
+# Test 4: Empty Cashflow DataFrame Input - Should return an empty DataFrame with correct columns/dtypes
+def test_reprice_empty_cashflow_df():
+    instrument_cashflow_df = create_cashflow_df_template() 
+    instrument_data = pd.Series({
+        'next_repricing_date': pd.Timestamp('2023-07-01'),
+        'index': 'EIBOR',
+        'spread_bps': 50
+    }).astype({
+        'next_repricing_date': 'datetime64[ns]',
+        'index': 'object',
+        'spread_bps': 'int64'
+    })
+    shocked_curve = pd.DataFrame([
+        {'date': pd.Timestamp('2023-10-01'), 'rate': 0.03},
+    ]).astype({'date': 'datetime64[ns]', 'rate': 'float64'})
+
+    result_df = reprice_floating_instrument_cashflows_under_shock(
+        instrument_cashflow_df.copy(), instrument_data.copy(), shocked_curve.copy()
+    )
+
+    pd.testing.assert_frame_equal(result_df, instrument_cashflow_df, check_dtype=True) 
+
+# Test 5: Invalid Input - Missing essential columns in any of the input DataFrames/Series
+@pytest.mark.parametrize("cashflow_df_setup, instrument_data_setup, shocked_curve_setup, error_type", [
+    # Missing 'date' in instrument_cashflow_df
+    (pd.DataFrame([{'cash_flow_type': 'interest', 'amount': 100.0, 'is_floating_rate': True, 'original_principal': 10000.0}]), None, None, KeyError),
+    # Missing 'is_floating_rate' in instrument_cashflow_df
+    (pd.DataFrame([{'date': pd.Timestamp('2023-04-01'), 'cash_flow_type': 'interest', 'amount': 100.0, 'original_principal': 10000.0}]), None, None, KeyError),
+    # Missing 'next_repricing_date' in instrument_data
+    (None, pd.Series({'index': 'EIBOR', 'spread_bps': 50}), None, KeyError),
+    # Missing 'rate' in shocked_curve
+    (None, None, pd.DataFrame([{'date': pd.Timestamp('2023-10-01')}]).astype({'date': 'datetime64[ns]'}), KeyError), 
+    # Missing 'date' in shocked_curve
+    (None, None, pd.DataFrame([{'rate': 0.03}]).astype({'rate': 'float64'}), KeyError), 
 ])
-def test_plot_gap_table_heatmap_invalid_input_type(invalid_input):
-    """Test with non-DataFrame inputs, expecting a TypeError."""
-    with pytest.raises(TypeError):
-        plot_gap_table_heatmap(invalid_input)
+def test_reprice_floating_instrument_cashflows_invalid_input(cashflow_df_setup, instrument_data_setup, shocked_curve_setup, error_type):
+    # Base valid inputs to substitute or use when others are specifically tested for invalidity
+    base_cashflow_df = pd.DataFrame([
+        {'date': pd.Timestamp('2023-04-01'), 'cash_flow_type': 'interest', 'amount': 100.0, 'is_floating_rate': True, 'original_principal': 10000.0}
+    ], dtype=object).astype({
+        'date': 'datetime64[ns]', 'cash_flow_type': 'object', 'amount': 'float64', 
+        'is_floating_rate': 'bool', 'original_principal': 'float64'
+    })
+    base_instrument_data = pd.Series({
+        'next_repricing_date': pd.Timestamp('2023-07-01'),
+        'index': 'EIBOR',
+        'spread_bps': 50
+    }).astype({
+        'next_repricing_date': 'datetime64[ns]',
+        'index': 'object',
+        'spread_bps': 'int64'
+    })
+    base_shocked_curve = pd.DataFrame([
+        {'date': pd.Timestamp('2023-10-01'), 'rate': 0.03}
+    ]).astype({'date': 'datetime64[ns]', 'rate': 'float64'})
+    
+    # Assign inputs based on test parameters
+    cashflow_df_input = cashflow_df_setup if cashflow_df_setup is not None else base_cashflow_df
+    instrument_data_input = instrument_data_setup if instrument_data_setup is not None else base_instrument_data
+    shocked_curve_input = shocked_curve_setup if shocked_curve_setup is not None else base_shocked_curve
 
-def test_plot_gap_table_heatmap_single_cell_dataframe(mock_plotting_libs):
-    """Test with a DataFrame containing only a single cell, ensuring it's handled."""
-    mock_heatmap, mock_show, _, _, _ = mock_plotting_libs
-
-    df_single_cell = pd.DataFrame({'Value': [100]}, index=['Single'])
-
-    result = plot_gap_table_heatmap(df_single_cell)
-
-    assert result is None
-    mock_heatmap.assert_called_once()
-    pd.testing.assert_frame_equal(mock_heatmap.call_args[0][0], df_single_cell)
-    mock_show.assert_called_once()
+    with pytest.raises(error_type):
+        reprice_floating_instrument_cashflows_under_shock(
+            cashflow_df_input, instrument_data_input, shocked_curve_input
+        )
