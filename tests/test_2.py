@@ -1,79 +1,104 @@
 import pytest
 import pandas as pd
-import io
-import numpy as np
+from datetime import date, timedelta
 
-# Keep a placeholder definition_b1918b60bc4341ff92453be9f49b7950 for the import of the module.
-# Keep the `your_module` block as it is. DO NOT REPLACE or REMOVE the block.
-from definition_b1918b60bc4341ff92453be9f49b7950 import display_dataframe_info
+# Placeholder for the module import
+from definition_c6e7c52e192c4025b2b9c6c751170c35 import calculate_cashflows_for_instrument
 
-
-@pytest.mark.parametrize("input, expected", [
-    # Test Case 1: Standard DataFrame with multiple columns and rows
-    (pd.DataFrame({'col_int': [1, 2, 3], 'col_str': ['A', 'B', 'C']}), None),
-
-    # Test Case 2: Empty DataFrame
-    (pd.DataFrame(), None),
-
-    # Test Case 3: DataFrame with NaNs and Mixed Data Types
-    (pd.DataFrame({'num_col': [10.0, 20.0, np.nan], 'str_col': ['alpha', None, 'beta'], 'bool_col': [True, False, True]}), None),
-
-    # Test Case 4: Non-DataFrame input (should raise TypeError)
-    ([1, 2, 3], TypeError),
-
-    # Test Case 5: DataFrame with a single row and a single column
-    (pd.DataFrame({'single_value': [42]}), None),
+@pytest.mark.parametrize("instrument_data, baseline_curve, expected_result", [
+    # Test Case 1: Standard fixed-rate instrument - checks for DataFrame structure and expected columns.
+    (
+        pd.Series({
+            'instrument_id': 'fixed_loan_001',
+            'category': 'asset',
+            'balance': 100000.0,
+            'rate_type': 'fixed',
+            'current_rate': 0.05,
+            'payment_freq': 'Annual',
+            'maturity_date': date(2025, 12, 31),
+            'next_repricing_date': date(2025, 12, 31) # For fixed, typically matches maturity or current date
+        }),
+        pd.DataFrame({'Date': [date(2023, 1, 1), date(2025, 12, 31)], 'Rate': [0.03, 0.04]}),
+        'dataframe_check' # Sentinel to indicate expected DataFrame properties
+    ),
+    # Test Case 2: Standard floating-rate instrument - checks for DataFrame structure and expected columns.
+    (
+        pd.Series({
+            'instrument_id': 'float_loan_002',
+            'category': 'asset',
+            'balance': 50000.0,
+            'rate_type': 'floating',
+            'index': 'EIBOR',
+            'spread_bps': 150, # 1.5%
+            'current_rate': 0.035, # Example initial rate
+            'payment_freq': 'Quarterly',
+            'maturity_date': date(2026, 6, 30),
+            'next_repricing_date': date(2024, 3, 31) # Next repricing point
+        }),
+        pd.DataFrame({'Date': [date(2023, 1, 1), date(2026, 6, 30)], 'Rate': [0.03, 0.05]}),
+        'dataframe_check'
+    ),
+    # Test Case 3: Instrument with zero balance - expects an empty DataFrame.
+    (
+        pd.Series({
+            'instrument_id': 'zero_bal_003',
+            'category': 'liability',
+            'balance': 0.0, # Zero balance
+            'rate_type': 'fixed',
+            'current_rate': 0.01,
+            'payment_freq': 'Monthly',
+            'maturity_date': date(2024, 1, 1),
+            'next_repricing_date': date(2024, 1, 1)
+        }),
+        pd.DataFrame({'Date': [date(2023, 1, 1)], 'Rate': [0.01]}),
+        pd.DataFrame() # Expect an empty DataFrame
+    ),
+    # Test Case 4: Invalid instrument_data type (e.g., dict instead of pandas.Series) - expects TypeError.
+    (
+        {'instrument_id': 'invalid_type_004', 'balance': 1000}, # Incorrect type
+        pd.DataFrame({'Date': [date(2023, 1, 1)], 'Rate': [0.01]}),
+        TypeError
+    ),
+    # Test Case 5: Missing essential column in instrument_data - expects KeyError or ValueError.
+    (
+        pd.Series({
+            'instrument_id': 'missing_col_005',
+            'category': 'asset',
+            'balance': 10000.0,
+            'rate_type': 'fixed',
+            # 'payment_freq' is deliberately missing here
+            'maturity_date': date(2025, 12, 31),
+            'next_repricing_date': date(2025, 12, 31)
+        }),
+        pd.DataFrame({'Date': [date(2023, 1, 1)], 'Rate': [0.01]}),
+        (KeyError, ValueError) # Expected to raise either KeyError (if accessing directly) or ValueError (if validated)
+    ),
 ])
-def test_display_dataframe_info(capsys, input, expected):
+def test_calculate_cashflows_for_instrument(instrument_data, baseline_curve, expected_result):
     try:
-        # Call the function under test
-        returned_value = display_dataframe_info(input)
+        result = calculate_cashflows_for_instrument(instrument_data, baseline_curve)
+        
+        # Handle cases expecting a DataFrame output
+        if expected_result == 'dataframe_check':
+            assert isinstance(result, pd.DataFrame)
+            expected_columns = ['Date', 'Type', 'Amount', 'Instrument_ID', 'Category']
+            assert all(col in result.columns for col in expected_columns)
+            assert not result.empty, "DataFrame should not be empty for a non-zero balance instrument."
+            # Further assertions on content (e.g., number of rows, specific values)
+            # would require knowledge of the exact cash flow calculation logic,
+            # which is not available in a 'pass' stub.
+            assert result['Instrument_ID'].iloc[0] == instrument_data['instrument_id']
+            assert result['Category'].iloc[0] == instrument_data['category']
 
-        # Assert the return value for valid DataFrame cases (should always be None)
-        assert returned_value is expected
-
-        # Capture output for valid DataFrame cases
-        captured = capsys.readouterr()
-        output = captured.out
-
-        # Assert that the function printed something to stdout
-        assert output is not None and output != ""
-
-        # Check for expected section headers in the output
-        assert "DataFrame Head:" in output
-        assert "DataFrame Info:" in output
-        assert "DataFrame Description:" in output
-
-        # Specific content checks based on the input DataFrame structure
-        if input.empty:
-            assert "Empty DataFrame" in output
-            assert "0 entries" in output  # From df.info()
-            assert "Index: []" in output # From df.describe() on an empty DF
-        elif 'col_int' in input.columns: # Test Case 1 (Standard DataFrame)
-            assert 'col_int' in output
-            assert 'col_str' in output
-            assert '3 rows' in output
-            assert 'int64' in output
-            assert 'object' in output
-            assert 'mean' in output
-        elif 'num_col' in input.columns: # Test Case 3 (NaNs and Mixed Types)
-            assert 'num_col' in output
-            assert 'str_col' in output
-            assert 'bool_col' in output
-            assert '2 non-null' in output # For num_col from df.info() (because of np.nan)
-            assert 'float64' in output
-            assert 'object' in output
-            assert 'bool' in output
-            assert 'count' in output
-        elif 'single_value' in input.columns: # Test Case 5 (Single row/column)
-            assert 'single_value' in output
-            assert '1 row' in output
-            assert 'count    1.0' in output
-            assert 'mean     42.0' in output
-
+        elif isinstance(expected_result, pd.DataFrame) and expected_result.empty:
+            assert isinstance(result, pd.DataFrame)
+            assert result.empty, "Expected an empty DataFrame for zero balance instrument."
+            expected_columns = ['Date', 'Type', 'Amount', 'Instrument_ID', 'Category']
+            assert all(col in result.columns for col in expected_columns) # Ensure columns exist even if empty
+            
     except Exception as e:
-        # For cases where an exception is expected
-        assert isinstance(e, expected)
-        # Check the error message for TypeError, assuming the function provides a helpful message
-        if expected is TypeError:
-            assert "pandas DataFrame" in str(e)
+        # Handle cases expecting an exception
+        if isinstance(expected_result, tuple): # For multiple possible exceptions
+            assert isinstance(e, expected_result)
+        else:
+            assert isinstance(e, expected_result)
